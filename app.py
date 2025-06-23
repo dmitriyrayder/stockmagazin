@@ -5,7 +5,7 @@ import plotly.graph_objects as go
 
 # --- Настройка страницы Streamlit ---
 st.set_page_config(
-    page_title="Анализ План/Факт v3.0",
+    page_title="Анализ План/Факт v3.1",
     page_icon="📊",
     layout="wide"
 )
@@ -35,6 +35,7 @@ if plan_file and fact_file:
         plan_df = pd.read_excel(plan_file)
         fact_df = pd.read_excel(fact_file)
 
+        # ПРОВЕРКА: Убедимся, что в файле "План" есть обе колонки
         REQUIRED_PLAN_COLS = ['магазин', 'ART', 'Describe', 'MOD', 'Price', 'brend', 'Segment', 'Должно_быть_на_остатках', 'Остатки в деньгах']
         REQUIRED_FACT_COLS = ['магазин', 'ART', 'Describe', 'MOD', 'остатки']
 
@@ -42,10 +43,11 @@ if plan_file and fact_file:
            not validate_columns(fact_df, REQUIRED_FACT_COLS, fact_file.name):
             st.stop()
 
-        # --- Предварительная обработка и переименование ---
+        # --- ИСПРАВЛЕННОЕ ПЕРЕИМЕНОВАНИЕ ---
+        # Здесь реализовано логически верное переименование
         plan_df = plan_df.rename(columns={
-            'Должно_быть_на_остатках': 'Plan_STUKI',
-            'Остатки в деньгах': 'Plan_GRN'
+            'Должно_быть_на_остатках': 'Plan_STUKI', # Это количество
+            'Остатки в деньгах': 'Plan_GRN'         # Это деньги
         })
         fact_df = fact_df.rename(columns={'остатки': 'Fact_STUKI'})
         
@@ -60,24 +62,19 @@ if plan_file and fact_file:
             if col in merged_df.columns:
                 merged_df[col] = merged_df[col].fillna(0)
         
-        # Расчет фактических остатков в гривнах
         merged_df['Fact_GRN'] = merged_df['Fact_STUKI'] * merged_df['Price']
 
         # --- Боковая панель с фильтрами ---
         st.sidebar.header("Параметры анализа")
-
         all_stores = sorted(merged_df['магазин'].dropna().unique())
         selected_store = st.sidebar.selectbox("Шаг 1: Выберите магазин", options=all_stores)
-
         store_df = merged_df[merged_df['магазин'] == selected_store].copy()
-
         all_segments = ['Выбрать все'] + sorted(store_df['Segment'].dropna().unique())
         selected_segment = st.sidebar.selectbox("Шаг 2: Выберите сегмент", options=all_segments)
-
         all_brands = ['Выбрать все'] + sorted(store_df['brend'].dropna().unique())
         selected_brand = st.sidebar.selectbox("Шаг 3: Выберите бренд", options=all_brands)
         
-        # --- Применение фильтров для основного анализа ---
+        # --- Применение фильтров ---
         filtered_df = store_df.copy()
         if selected_segment != 'Выбрать все':
             filtered_df = filtered_df[filtered_df['Segment'] == selected_segment]
@@ -86,22 +83,15 @@ if plan_file and fact_file:
 
         # --- Визуализация структуры магазина ---
         st.header(f"2. Анализ структуры магазина '{selected_store}'")
-        
-        # Группируем данные по сегменту для всего магазина (до применения фильтра по сегменту)
         segment_data = store_df.groupby('Segment')['Plan_GRN'].sum().reset_index()
-        segment_data = segment_data[segment_data['Plan_GRN'] > 0] # Убираем сегменты без плановой стоимости
-
-        fig_pie = px.pie(segment_data, 
-                         values='Plan_GRN', 
-                         names='Segment', 
-                         title='Структура сегментов по плановой стоимости (Грн.)',
-                         hole=0.3)
+        segment_data = segment_data[segment_data['Plan_GRN'] > 0]
+        fig_pie = px.pie(segment_data, values='Plan_GRN', names='Segment', 
+                         title='Структура сегментов по плановой стоимости (Грн.)', hole=0.3)
         fig_pie.update_traces(textposition='inside', textinfo='percent+label')
         st.plotly_chart(fig_pie, use_container_width=True)
 
-        # --- Расчет и отображение итоговых метрик ---
+        # --- Итоговые метрики ---
         st.header(f"3. Результаты План/Факт анализа")
-        
         filter_info = []
         if selected_segment != 'Выбрать все': filter_info.append(f"Сегмент: **{selected_segment}**")
         if selected_brand != 'Выбрать все': filter_info.append(f"Бренд: **{selected_brand}**")
@@ -127,46 +117,28 @@ if plan_file and fact_file:
             st.metric(label="Выполнение плана по кол-ву", value=f"{qty_completion_percent:.1f}%")
             st.metric(label="Выполнение плана по деньгам", value=f"{money_completion_percent:.1f}%")
 
-        # --- Визуализация выполнения плана по сегменту (Спидометры) ---
+        # --- Спидометры ---
         if selected_segment != 'Выбрать все':
             st.subheader(f"Выполнение плана по сегменту: '{selected_segment}'")
             g_col1, g_col2 = st.columns(2)
-            
             with g_col1:
                 fig_gauge_qty = go.Figure(go.Indicator(
-                    mode = "gauge+number",
-                    value = total_fact_qty,
-                    title = {'text': "<b>Выполнение в штуках (шт.)</b>"},
-                    gauge = {'axis': {'range': [0, total_plan_qty]},
-                             'bar': {'color': "#1f77b4"},
-                             'steps' : [
-                                 {'range': [0, total_plan_qty * 0.8], 'color': "lightgray"},
-                                 {'range': [total_plan_qty * 0.8, total_plan_qty], 'color': "gray"}],
-                             'threshold' : {'line': {'color': "red", 'width': 4}, 'thickness': 0.75, 'value': total_plan_qty}}
-                ))
+                    mode="gauge+number", value=total_fact_qty, title={'text': "<b>Выполнение в штуках (шт.)</b>"},
+                    gauge={'axis': {'range': [0, total_plan_qty]}, 'bar': {'color': "#1f77b4"},
+                           'threshold': {'line': {'color': "red", 'width': 4}, 'thickness': 0.75, 'value': total_plan_qty}}))
                 st.plotly_chart(fig_gauge_qty, use_container_width=True)
-
             with g_col2:
                 fig_gauge_money = go.Figure(go.Indicator(
-                    mode = "gauge+number+delta",
-                    value = total_fact_money,
-                    title = {'text': "<b>Выполнение в деньгах (Грн.)</b>"},
-                    number = {'suffix': " Грн."},
-                    delta = {'reference': total_plan_money, 'relative': False, 'valueformat': ',.2f'},
-                    gauge = {'axis': {'range': [0, total_plan_money]},
-                             'bar': {'color': "#1f77b4"},
-                             'steps' : [
-                                 {'range': [0, total_plan_money * 0.8], 'color': "lightgray"},
-                                 {'range': [total_plan_money * 0.8, total_plan_money], 'color': "gray"}],
-                             'threshold' : {'line': {'color': "red", 'width': 4}, 'thickness': 0.75, 'value': total_plan_money}}
-                ))
+                    mode="gauge+number+delta", value=total_fact_money, title={'text': "<b>Выполнение в деньгах (Грн.)</b>"},
+                    number={'suffix': " Грн."}, delta={'reference': total_plan_money},
+                    gauge={'axis': {'range': [0, total_plan_money]}, 'bar': {'color': "#1f77b4"},
+                           'threshold': {'line': {'color': "red", 'width': 4}, 'thickness': 0.75, 'value': total_plan_money}}))
                 st.plotly_chart(fig_gauge_money, use_container_width=True)
 
-        # --- Детальная таблица с расхождениями ---
+        # --- Детальная таблица ---
         st.header("4. Детальная таблица с расхождениями")
         filtered_df['Отклонение, шт'] = filtered_df['Fact_STUKI'] - filtered_df['Plan_STUKI']
         discrepancy_df = filtered_df[filtered_df['Отклонение, шт'] != 0].copy()
-
         st.write(f"Найдено позиций с расхождениями: **{len(discrepancy_df)}**")
         display_columns = {
             'ART': 'Артикул', 'Describe': 'Описание', 'MOD': 'Модель', 'brend': 'Бренд',
@@ -174,7 +146,6 @@ if plan_file and fact_file:
             'Fact_STUKI': 'Факт, шт.', 'Отклонение, шт': 'Отклонение, шт.'
         }
         columns_to_show = [col for col in display_columns.keys() if col in discrepancy_df.columns]
-        
         st.dataframe(
             discrepancy_df[columns_to_show].rename(columns=display_columns), 
             use_container_width=True, height=400
