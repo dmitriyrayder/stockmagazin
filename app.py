@@ -1,12 +1,12 @@
 import streamlit as st
 import pandas as pd
-import numpy as np # Нужен для обработки деления на ноль
+import numpy as np # Убедимся, что numpy импортирован
 import plotly.express as px
 import plotly.graph_objects as go
 
 # --- Настройка страницы Streamlit ---
 st.set_page_config(
-    page_title="Анализ План/Факт v4.0",
+    page_title="Анализ План/Факт v4.1",
     page_icon="🎯",
     layout="wide"
 )
@@ -15,7 +15,6 @@ st.title("🎯 Сервис для План/Факт анализа с быст�
 
 # --- Секция 1: Загрузка файлов ---
 st.header("1. Загрузка и проверка файлов")
-# ... (код загрузки и валидации остается без изменений)
 col1, col2 = st.columns(2)
 with col1:
     plan_file = st.file_uploader("Загрузите файл 'План'", type=["xlsx", "xls"])
@@ -32,7 +31,7 @@ def validate_columns(df, required_cols, filename):
 # --- Основная логика после загрузки файлов ---
 if plan_file and fact_file:
     try:
-        # --- Подготовка данных (как и раньше) ---
+        # --- Подготовка данных ---
         plan_df = pd.read_excel(plan_file)
         fact_df = pd.read_excel(fact_file)
 
@@ -59,11 +58,10 @@ if plan_file and fact_file:
         
         merged_df['Fact_GRN'] = merged_df['Fact_STUKI'] * merged_df['Price']
 
-        # --- НОВЫЙ БЛОК: Быстрый анализ по всем магазинам ---
+        # --- БЛОК: Быстрый анализ по всем магазинам ---
         st.header("2. Быстрый анализ отклонений по магазинам")
-        st.info("Здесь можно найти магазины с наибольшим расхождением между планом и фактом по количеству товара. Установите порог отклонения в процентах.")
+        st.info("Здесь можно найти магазины с наибольшим расхождением между планом и фактом. Установите порог абсолютного отклонения в процентах.")
 
-        # Агрегируем данные по каждому магазину
         store_summary = merged_df.groupby('магазин').agg(
             Plan_STUKI=('Plan_STUKI', 'sum'),
             Fact_STUKI=('Fact_STUKI', 'sum'),
@@ -71,51 +69,43 @@ if plan_file and fact_file:
             Fact_GRN=('Fact_GRN', 'sum')
         ).reset_index()
 
-        # Рассчитываем отклонения
         store_summary['Отклонение_шт'] = store_summary['Fact_STUKI'] - store_summary['Plan_STUKI']
         
-        # Рассчитываем отклонение в %, обрабатывая случай деления на ноль
+        # --- ИСПРАВЛЕННАЯ СТРОКА ---
+        # Мы используем вложенный np.where для корректной обработки всех условий
         store_summary['Отклонение_%_шт'] = np.where(
-            store_summary['Plan_STUKI'] > 0,
-            abs(store_summary['Отклонение_шт']) / store_summary['Plan_STUKI'] * 100,
-            np.inf if store_summary['Отклонение_шт'] != 0 else 0 # Бесконечное отклонение, если план 0, а факт не 0
+            store_summary['Plan_STUKI'] > 0,  # Условие 1: Если план > 0
+            abs(store_summary['Отклонение_шт']) / store_summary['Plan_STUKI'] * 100,  # Действие 1: Считаем процент
+            np.where(
+                store_summary['Отклонение_шт'] != 0, # Условие 2 (если план=0): Если отклонение не 0
+                np.inf, # Действие 2: Отклонение бесконечно (излишек)
+                0 # Действие 3 (если план=0 и отклонение=0): Отклонения нет
+            )
         )
-
-        # Ручной ввод порога
+        
         threshold = st.number_input(
             "Показать магазины, где абсолютное отклонение в штуках БОЛЬШЕ чем (%)", 
             min_value=0, max_value=500, value=10, step=5
         )
 
-        # Фильтруем магазины по порогу
         problem_stores_df = store_summary[store_summary['Отклонение_%_шт'] > threshold].copy()
         problem_stores_df = problem_stores_df.sort_values(by='Отклонение_%_шт', ascending=False)
         
         st.write(f"**Найдено {len(problem_stores_df)} магазинов с отклонением > {threshold}%:**")
 
-        # Форматируем и выводим таблицу
         display_summary_df = problem_stores_df[[
             'магазин', 'Plan_STUKI', 'Fact_STUKI', 'Отклонение_шт', 'Отклонение_%_шт', 'Plan_GRN', 'Fact_GRN'
         ]].copy()
-
         display_summary_df.rename(columns={
-            'магазин': 'Магазин',
-            'Plan_STUKI': 'План, шт.',
-            'Fact_STUKI': 'Факт, шт.',
-            'Отклонение_шт': 'Расхождение, шт.',
-            'Отклонение_%_шт': 'Расхождение, %',
-            'Plan_GRN': 'План, Грн.',
-            'Fact_GRN': 'Факт, Грн.'
+            'магазин': 'Магазин', 'Plan_STUKI': 'План, шт.', 'Fact_STUKI': 'Факт, шт.',
+            'Отклонение_шт': 'Расхождение, шт.', 'Отклонение_%_шт': 'Расхождение, %',
+            'Plan_GRN': 'План, Грн.', 'Fact_GRN': 'Факт, Грн.'
         }, inplace=True)
         
         st.dataframe(
             display_summary_df.style.format({
-                'План, шт.': '{:,.0f}',
-                'Факт, шт.': '{:,.0f}',
-                'Расхождение, шт.': '{:,.0f}',
-                'Расхождение, %': '{:.1f}%',
-                'План, Грн.': '{:,.2f}',
-                'Факт, Грн.': '{:,.2f}'
+                'План, шт.': '{:,.0f}', 'Факт, шт.': '{:,.0f}', 'Расхождение, шт.': '{:,.0f}',
+                'Расхождение, %': '{:.1f}%', 'План, Грн.': '{:,.2f}', 'Факт, Грн.': '{:,.2f}'
             }),
             use_container_width=True
         )
@@ -123,64 +113,73 @@ if plan_file and fact_file:
         # --- Секция 3: Детальный анализ выбранного магазина (в боковой панели) ---
         st.sidebar.header("Детальный анализ")
         
-        # ВАЖНО: Список магазинов для выбора теперь можно отфильтровать
         all_stores_list = sorted(merged_df['магазин'].dropna().unique())
-        problem_stores_list = sorted(problem_stores_df['магазин'].unique())
+        problem_stores_list = sorted(problem_stores_df['Магазин'].unique())
         
-        # Даем выбор пользователю: анализировать все магазины или только проблемные
-        analysis_scope = st.sidebar.radio(
-            "Область анализа:",
-            ('Все магазины', 'Только проблемные')
-        )
+        analysis_scope = st.sidebar.radio("Область анализа:", ('Все магазины', 'Только проблемные'))
         
         stores_for_selection = problem_stores_list if analysis_scope == 'Только проблемные' and problem_stores_list else all_stores_list
 
         selected_store = st.sidebar.selectbox("Шаг 1: Выберите магазин", options=stores_for_selection)
 
         if selected_store:
+            # ... (остальная часть кода без изменений) ...
             store_df = merged_df[merged_df['магазин'] == selected_store].copy()
-
-            # Остальная часть детального анализа (фильтры, графики, таблицы)
             selected_segment = st.sidebar.selectbox("Шаг 2: Выберите сегмент", options=['Выбрать все'] + sorted(store_df['Segment'].dropna().unique()))
             selected_brand = st.sidebar.selectbox("Шаг 3: Выберите бренд", options=['Выбрать все'] + sorted(store_df['brend'].dropna().unique()))
             
-            # --- Применение фильтров ---
             filtered_df = store_df.copy()
             if selected_segment != 'Выбрать все':
                 filtered_df = filtered_df[filtered_df['Segment'] == selected_segment]
             if selected_brand != 'Выбрать все':
                 filtered_df = filtered_df[filtered_df['brend'] == selected_brand]
             
-            # Далее идет весь код для детального анализа, просто с измененными номерами заголовков
-            
-            # --- Визуализация структуры магазина ---
             st.header(f"3. Анализ структуры магазина '{selected_store}'")
-            # ... (код круговой диаграммы без изменений)
             segment_data = store_df.groupby('Segment')['Plan_GRN'].sum().reset_index()
             segment_data = segment_data[segment_data['Plan_GRN'] > 0]
-            fig_pie = px.pie(segment_data, values='Plan_GRN', names='Segment', 
-                             title='Структура сегментов по плановой стоимости (Грн.)', hole=0.3)
+            fig_pie = px.pie(segment_data, values='Plan_GRN', names='Segment', title='Структура сегментов по плановой стоимости (Грн.)', hole=0.3)
             fig_pie.update_traces(textposition='inside', textinfo='percent+label')
             st.plotly_chart(fig_pie, use_container_width=True)
 
-            # --- Итоговые метрики ---
             st.header(f"4. Результаты План/Факт для '{selected_store}'")
-            # ... (код метрик, спидометров и детальной таблицы без изменений)
+            # ... (здесь весь блок с метриками, спидометрами и детальной таблицей, он не менялся)
             total_plan_qty = filtered_df['Plan_STUKI'].sum()
             total_fact_qty = filtered_df['Fact_STUKI'].sum()
             total_plan_money = filtered_df['Plan_GRN'].sum()
             total_fact_money = filtered_df['Fact_GRN'].sum()
-            
+            qty_completion_percent = (total_fact_qty / total_plan_qty * 100) if total_plan_qty > 0 else 0
+            money_completion_percent = (total_fact_money / total_plan_money * 100) if total_plan_money > 0 else 0
+
             st.subheader("Сводная статистика по выборке")
             col1, col2, col3 = st.columns(3)
-            # ... (код st.metric без изменений)
-            
+            with col1:
+                st.metric(label="План, шт.", value=f"{int(total_plan_qty)}")
+                st.metric(label="Факт, шт.", value=f"{int(total_fact_qty)}", delta=f"{int(total_fact_qty - total_plan_qty)} шт.")
+            with col2:
+                st.metric(label="План, деньги", value=f"{total_plan_money:,.2f} Грн.")
+                st.metric(label="Факт, деньги", value=f"{total_fact_money:,.2f} Грн.", delta=f"{(total_fact_money - total_plan_money):,.2f} Грн.")
+            with col3:
+                st.metric(label="Выполнение плана по кол-ву", value=f"{qty_completion_percent:.1f}%")
+                st.metric(label="Выполнение плана по деньгам", value=f"{money_completion_percent:.1f}%")
+
             if selected_segment != 'Выбрать все':
                 st.subheader(f"Выполнение плана по сегменту: '{selected_segment}'")
-                # ... (код спидометров без изменений)
+                g_col1, g_col2 = st.columns(2)
+                with g_col1:
+                    fig_gauge_qty = go.Figure(go.Indicator(mode="gauge+number", value=total_fact_qty, title={'text': "<b>Выполнение в штуках (шт.)</b>"}, gauge={'axis': {'range': [0, max(total_plan_qty, total_fact_qty)]}, 'bar': {'color': "#1f77b4"}, 'threshold': {'line': {'color': "red", 'width': 4}, 'thickness': 0.75, 'value': total_plan_qty}}))
+                    st.plotly_chart(fig_gauge_qty, use_container_width=True)
+                with g_col2:
+                    fig_gauge_money = go.Figure(go.Indicator(mode="gauge+number+delta", value=total_fact_money, title={'text': "<b>Выполнение в деньгах (Грн.)</b>"}, number={'suffix': " Грн."}, delta={'reference': total_plan_money}, gauge={'axis': {'range': [0, max(total_plan_money, total_fact_money)]}, 'bar': {'color': "#1f77b4"}, 'threshold': {'line': {'color': "red", 'width': 4}, 'thickness': 0.75, 'value': total_plan_money}}))
+                    st.plotly_chart(fig_gauge_money, use_container_width=True)
 
             st.header("5. Детальная таблица с расхождениями")
-            # ... (код детальной таблицы без изменений)
+            filtered_df['Отклонение, шт'] = filtered_df['Fact_STUKI'] - filtered_df['Plan_STUKI']
+            discrepancy_df = filtered_df[filtered_df['Отклонение, шт'] != 0].copy()
+            st.write(f"Найдено позиций с расхождениями: **{len(discrepancy_df)}**")
+            display_columns = {'ART': 'Артикул', 'Describe': 'Описание', 'MOD': 'Модель', 'brend': 'Бренд', 'Segment': 'Сегмент', 'Price': 'Цена, Грн.', 'Plan_STUKI': 'План, шт.', 'Fact_STUKI': 'Факт, шт.', 'Отклонение, шт': 'Отклонение, шт.'}
+            columns_to_show = [col for col in display_columns.keys() if col in discrepancy_df.columns]
+            st.dataframe(discrepancy_df[columns_to_show].rename(columns=display_columns), use_container_width=True, height=400)
+
 
     except Exception as e:
         st.error(f"**Критическая ошибка при обработке файлов:** {e}")
