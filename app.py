@@ -7,49 +7,12 @@ from datetime import datetime
 import io
 
 # --- Конфигурация страницы ---
-st.set_page_config(page_title="План/Факт Анализ v8.0-Robust", page_icon="🏆", layout="wide")
-st.title("🏆 Универсальный сервис для План/Факт анализа")
+st.set_page_config(page_title="План/Факт Анализ v9.0-Simple", page_icon="🏆", layout="wide")
+st.title("🏆 Сервис для План/Факт анализа (упрощенная версия)")
+st.info("Эта версия настроена для объединения плоских таблиц по составному ключу: **Магазин + Описание + Модель**.")
 
 # --- Вспомогательные функции ---
 @st.cache_data
-def analyze_data_quality(df, file_name):
-    """Анализирует качество данных в DataFrame."""
-    quality_info = []
-    for col in df.columns:
-        total_rows = len(df)
-        non_null_count = df[col].notna().sum()
-        null_count = df[col].isna().sum()
-        if pd.api.types.is_datetime64_any_dtype(df[col]):
-            valid_numeric = 'N/A (Дата)'
-        else:
-            valid_numeric = pd.to_numeric(df[col], errors='coerce').notna().sum()
-        quality_info.append({
-            'Файл': file_name, 'Колонка': col, 'Общее количество': total_rows,
-            'Заполнено': non_null_count, 'Пустые': null_count,
-            'Валидные числа': valid_numeric, 'Процент заполнения': f"{(non_null_count/total_rows*100):.1f}%"
-        })
-    return pd.DataFrame(quality_info)
-
-@st.cache_data
-def transform_wide_to_flat(_wide_df, id_vars):
-    """Преобразует широкий DataFrame плана в плоский."""
-    plan_data_cols = [col for col in _wide_df.columns if col not in id_vars]
-    magazin_cols = sorted([col for col in plan_data_cols if str(col).startswith('Magazin')])
-    stuki_cols = sorted([col for col in plan_data_cols if str(col).startswith('Plan_STUKI')])
-    grn_cols = sorted([col for col in plan_data_cols if str(col).startswith('Plan_GRN')])
-    if not (len(magazin_cols) == len(stuki_cols) == len(grn_cols) and len(magazin_cols) > 0):
-        st.error("Ошибка структуры файла Плана: Количество колонок 'Magazin', 'Plan_STUKI', 'Plan_GRN' не совпадает или равно нулю. Проверьте префиксы.")
-        return None
-    flat_parts = []
-    for i in range(len(magazin_cols)):
-        current_cols = id_vars + [magazin_cols[i], stuki_cols[i], grn_cols[i]]
-        part_df = _wide_df[current_cols].copy()
-        part_df.rename(columns={magazin_cols[i]: 'магазин', stuki_cols[i]: 'Plan_STUKI', grn_cols[i]: 'Plan_GRN'}, inplace=True)
-        flat_parts.append(part_df)
-    flat_df = pd.concat(flat_parts, ignore_index=True)
-    flat_df.dropna(subset=['магазин'], inplace=True)
-    return flat_df
-
 def calculate_metrics(df):
     """Рассчитывает основные метрики для данных."""
     total_plan_qty = df['Plan_STUKI'].sum()
@@ -68,100 +31,101 @@ def convert_df_to_excel(df):
     return processed_data
 
 # --- Инициализация Session State ---
-if 'processed_df' not in st.session_state: st.session_state.processed_df = None
+if 'processed_df' not in st.session_state:
+    st.session_state.processed_df = None
 
 # --- Шаг 1: Загрузка файлов ---
 st.header("1. Загрузка файлов")
 col1, col2 = st.columns(2)
-with col1: plan_file = st.file_uploader("Загрузите файл 'План'", type=["xlsx", "xls"], key="plan_uploader")
-with col2: fact_file = st.file_uploader("Загрузите файл 'Факт'", type=["xlsx", "xls"], key="fact_uploader")
+with col1:
+    plan_file = st.file_uploader("Загрузите файл 'План'", type=["xlsx", "xls"])
+with col2:
+    fact_file = st.file_uploader("Загрузите файл 'Факт'", type=["xlsx", "xls"])
 
-# --- Анализ и обработка ---
+# --- УПРОЩЕННЫЙ ПОДХОД К НАСТРОЙКЕ ---
 if plan_file and fact_file:
     plan_df_original = pd.read_excel(plan_file, engine='openpyxl')
     fact_df_original = pd.read_excel(fact_file, engine='openpyxl')
 
-    st.header("1.1. Анализ качества загруженных данных")
-    plan_quality = analyze_data_quality(plan_df_original, "План")
-    fact_quality = analyze_data_quality(fact_df_original, "Факт")
-    st.dataframe(pd.concat([plan_quality, fact_quality], ignore_index=True), use_container_width=True)
-
-    st.header("2. Настройка и обработка данных")
-    plan_format = st.radio("Выберите формат файла 'План':", ('Плоский (стандартный)', 'Широкий (горизонтальный)'), horizontal=True)
-
+    st.header("2. Настройка соответствия колонок")
+    
     with st.form("processing_form"):
-        st.subheader("Настройка ключей и сопоставление колонок")
-        all_plan_columns = plan_df_original.columns.tolist()
-        potential_keys = ['ART', 'Describe', 'MOD', 'Brend', 'Segment', 'Price']
-        default_keys = [col for col in potential_keys if col in all_plan_columns]
+        st.write("Укажите, какие колонки в ваших файлах соответствуют нужным полям.")
         
-        product_keys = st.multiselect(
-            "1. Выберите колонки, уникально описывающие товар (ключи)",
-            options=all_plan_columns, default=default_keys,
-            help="Эти колонки будут использованы для объединения данных. 'ART' обязателен."
-        )
+        # --- Настройка файла ПЛАН ---
+        st.subheader("Настройка файла 'План'")
+        plan_cols = plan_df_original.columns.tolist()
+        plan_mappings = {
+            'магазин': st.selectbox("Колонка 'Магазин' в файле План", plan_cols, key='plan_magazin'),
+            'Describe': st.selectbox("Колонка 'Описание' в файле План", plan_cols, key='plan_describe'),
+            'MOD': st.selectbox("Колонка 'Модель' в файле План", plan_cols, key='plan_mod'),
+            'Plan_STUKI': st.selectbox("Колонка 'План (шт.)' в файле План", plan_cols, key='plan_stuki'),
+            # Опциональные колонки
+            'ART': st.selectbox("Колонка 'Артикул' (если есть)", [None] + plan_cols, key='plan_art'),
+            'Plan_GRN': st.selectbox("Колонка 'План (грн.)' (если есть)", [None] + plan_cols, key='plan_grn'),
+            'Price': st.selectbox("Колонка 'Цена' (если есть)", [None] + plan_cols, key='plan_price'),
+        }
 
-        # --- ИСПРАВЛЕННАЯ ЛОГИКА ---
-        st.subheader("2. Сопоставление для файла 'Факт'")
-        fact_mappings = {}
+        # --- Настройка файла ФАКТ ---
+        st.subheader("Настройка файла 'Факт'")
         fact_cols = fact_df_original.columns.tolist()
-        
-        # Динамически создаем список полей для сопоставления
-        fields_to_map_for_fact = {'магазин': 'Магазин', 'Fact_STUKI': 'Фактические остатки (шт.)'}
-        for key in product_keys:
-            if key not in fields_to_map_for_fact:
-                fields_to_map_for_fact[key] = key.capitalize() # Используем сам ключ как отображаемое имя
+        fact_mappings = {
+            'магазин': st.selectbox("Колонка 'Магазин' в файле Факт", fact_cols, key='fact_magazin'),
+            'Describe': st.selectbox("Колонка 'Описание' в файле Факт", fact_cols, key='fact_describe'),
+            'MOD': st.selectbox("Колонка 'Модель' в файле Факт", fact_cols, key='fact_mod'),
+            'Fact_STUKI': st.selectbox("Колонка 'Факт (шт.)' в файле Факт", fact_cols, key='fact_stuki'),
+            # Опциональные колонки
+            'ART': st.selectbox("Колонка 'Артикул' (если есть)", [None] + fact_cols, key='fact_art'),
+            'brend': st.selectbox("Колонка 'Бренд' (если есть)", [None] + fact_cols, key='fact_brand'),
+        }
 
-        # Создаем селект-боксы для каждого необходимого поля
-        for internal_name, display_name in fields_to_map_for_fact.items():
-            # Попробуем найти похожую колонку для авто-выбора
-            default_selection = next((col for col in fact_cols if display_name.lower() in str(col).lower()), fact_cols[0])
-            fact_mappings[internal_name] = st.selectbox(f'Выберите колонку для "{display_name}"', fact_cols, index=fact_cols.index(default_selection), key=f'fact_{internal_name}')
-        
-        col1, col2 = st.columns(2)
-        with col1: remove_duplicates = st.checkbox("Удалить дубликаты по ключам", value=True)
-        with col2: fill_zeros = st.checkbox("Заполнить пропуски в числовых данных нулями", value=True)
         submitted = st.form_submit_button("🚀 Обработать и запустить анализ", type="primary")
 
     if submitted:
         try:
-            plan_df_renamed = plan_df_original.rename(columns={'Brend': 'brend'})
-            if plan_format == 'Широкий (горизонтальный)':
-                if not product_keys: st.error("Для широкого формата необходимо выбрать ключи."); st.stop()
-                plan_df = transform_wide_to_flat(plan_df_renamed, product_keys)
-            else:
-                plan_df = plan_df_renamed.rename(columns={'Magazin': 'магазин'})
-
-            if plan_df is None: st.error("Не удалось обработать файл 'План'."); st.stop()
+            # --- Обработка данных с новыми настройками ---
             
-            fact_rename_map = {v: k for k, v in fact_mappings.items()}
-            fact_df = fact_df_original[list(set(fact_rename_map.keys()))].rename(columns=fact_rename_map)
+            # Определяем ключ для объединения
+            merge_keys = ['магазин', 'Describe', 'MOD']
 
-            merge_keys = ['магазин'] + product_keys
-            if 'ART' not in merge_keys: st.error("Колонка 'ART' должна быть выбрана в качестве ключа."); st.stop()
-            st.info(f"Объединение будет произведено по ключам: {', '.join(merge_keys)}")
-
-            if remove_duplicates:
-                plan_df.drop_duplicates(subset=merge_keys, inplace=True)
-                fact_df.drop_duplicates(subset=merge_keys, inplace=True)
+            # Готовим файл ПЛАН
+            plan_rename_map = {v: k for k, v in plan_mappings.items() if v is not None}
+            plan_df = plan_df_original[list(plan_rename_map.keys())].rename(columns=plan_rename_map)
             
+            # Готовим файл ФАКТ
+            fact_rename_map = {v: k for k, v in fact_mappings.items() if v is not None}
+            fact_df = fact_df_original[list(fact_rename_map.keys())].rename(columns=fact_rename_map)
+
+            # Приведение типов ключей к строке для надежного слияния
             for key in merge_keys:
-                if key in plan_df.columns and key in fact_df.columns:
-                    plan_df[key] = plan_df[key].astype(str).str.strip()
-                    fact_df[key] = fact_df[key].astype(str).str.strip()
-            
-            fact_cols_to_merge = list(set(merge_keys + ['Fact_STUKI']))
-            merged_df = pd.merge(plan_df, fact_df[fact_cols_to_merge], on=merge_keys, how='outer')
+                if key in plan_df.columns: plan_df[key] = plan_df[key].astype(str).str.strip()
+                if key in fact_df.columns: fact_df[key] = fact_df[key].astype(str).str.strip()
 
-            numeric_columns = ['Plan_STUKI', 'Fact_STUKI', 'Plan_GRN', 'Price']
-            for col in numeric_columns:
-                if col in merged_df.columns:
-                    merged_df[col] = pd.to_numeric(merged_df[col], errors='coerce')
-                    if fill_zeros: merged_df[col] = merged_df[col].fillna(0)
+            # Объединение
+            merged_df = pd.merge(plan_df, fact_df, on=merge_keys, how='outer', suffixes=('_plan', '_fact'))
             
-            if 'Price' not in merged_df.columns:
-                 st.warning("Колонка 'Price' не найдена. Расчеты в деньгах (GRN) могут быть неполными.")
-                 merged_df['Price'] = 0
+            # Если Артикул был в обоих файлах, объединяем его в одну колонку
+            if 'ART_plan' in merged_df.columns and 'ART_fact' in merged_df.columns:
+                merged_df['ART'] = merged_df['ART_plan'].fillna(merged_df['ART_fact'])
+                merged_df.drop(columns=['ART_plan', 'ART_fact'], inplace=True)
+            elif 'ART_plan' in merged_df.columns:
+                 merged_df.rename(columns={'ART_plan': 'ART'}, inplace=True)
+            elif 'ART_fact' in merged_df.columns:
+                 merged_df.rename(columns={'ART_fact': 'ART'}, inplace=True)
+
+
+            # Заполнение пропусков нулями
+            numeric_cols = ['Plan_STUKI', 'Fact_STUKI', 'Plan_GRN', 'Price']
+            for col in numeric_cols:
+                if col in merged_df.columns:
+                    merged_df[col] = pd.to_numeric(merged_df[col], errors='coerce').fillna(0)
+                else: # Если колонки нет, создаем ее с нулями
+                    merged_df[col] = 0
+
+            # Расчеты
+            if 'Price' not in plan_mappings or plan_mappings['Price'] is None:
+                st.warning("Колонка 'Цена' не была указана. Расчеты в деньгах (GRN) могут быть неточными.")
+            
             merged_df['Fact_GRN'] = merged_df['Fact_STUKI'] * merged_df['Price']
             
             merged_df['Отклонение_шт'] = merged_df['Fact_STUKI'] - merged_df['Plan_STUKI']
@@ -176,12 +140,13 @@ if plan_file and fact_file:
         except Exception as e:
             st.session_state.processed_df = None
             st.error(f"❌ Ошибка при обработке данных: {e}")
-            st.error("Совет: Убедитесь, что для каждого поля сопоставлена уникальная колонка из файла 'Факт'.")
-            
-# --- Секция Аналитики (без изменений, т.к. она была корректна) ---
+            st.error("Совет: Убедитесь, что для обязательных полей выбраны правильные и уникальные колонки в обоих файлах.")
+
+# --- Секция Аналитики (остается без изменений) ---
 if st.session_state.processed_df is not None:
     processed_df = st.session_state.processed_df
-    # ... (весь остальной код аналитики остается таким же, как в предыдущем ответе) ...
+    
+    # ... Весь код аналитики, начиная с "st.header("3. Быстрый анализ...")" ...
     st.header("3. Быстрый анализ отклонений по магазинам")
     store_summary = processed_df.groupby('магазин').agg(
         Plan_STUKI=('Plan_STUKI', 'sum'), Fact_STUKI=('Fact_STUKI', 'sum'),
