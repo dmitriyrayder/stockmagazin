@@ -7,7 +7,7 @@ from datetime import datetime
 
 # --- Настройка страницы ---
 st.set_page_config(
-    page_title="Финальный План/Факт Анализ v7.0",
+    page_title="Финальный План/Факт Анализ v7.1", # Обновим версию
     page_icon="🏆",
     layout="wide"
 )
@@ -33,7 +33,7 @@ def analyze_data_quality(df, file_name):
             'Колонка': col,
             'Заполнено': non_null_count,
             'Пустые': total_rows - non_null_count,
-            'Процент заполнения': f"{(non_null_count / total_rows * 100):.1f}%"
+            'Процент заполнения': f"{(non_null_count / total_rows * 100):.1f}%" if total_rows > 0 else "0.0%"
         })
     return pd.DataFrame(quality_info)
 
@@ -121,7 +121,7 @@ if plan_file and fact_file:
                 id_vars = st.multiselect(
                     "Выберите все колонки, описывающие товар (НЕ для магазинов)",
                     options=all_plan_columns,
-                    default=[col for col in ['ART', 'Describe', 'MOD', 'Price', 'Brend', 'Segment'] if col in all_plan_columns],
+                    default=[col for col in ['ART', 'Describe', 'MOD', 'Price', 'brend', 'Segment'] if col in all_plan_columns],
                     help="Это колонки, которые останутся неизменными: артикул, описание, цена и т.д."
                 )
             else: # Плоский формат
@@ -249,8 +249,8 @@ if st.session_state.processed_df is not None:
             store_df = processed_df[processed_df['магазин'] == selected_store].copy()
 
             # Доп. фильтры в сайдбаре
-            all_segments = sorted(store_df['Segment'].dropna().unique()) if 'Segment' in store_df else []
-            all_brands = sorted(store_df['brend'].dropna().unique()) if 'brend' in store_df else []
+            all_segments = sorted(store_df['Segment'].dropna().unique()) if 'Segment' in store_df.columns else []
+            all_brands = sorted(store_df['brend'].dropna().unique()) if 'brend' in store_df.columns else []
             
             selected_segment = st.sidebar.selectbox("Выберите сегмент", options=['Все'] + all_segments)
             selected_brand = st.sidebar.selectbox("Выберите бренд", options=['Все'] + all_brands)
@@ -291,17 +291,18 @@ if st.session_state.processed_df is not None:
                 columns_to_show = [col for col in display_columns if col in table_df.columns]
                 st.dataframe(table_df[columns_to_show], use_container_width=True, height=400)
                 
-                # Экспорт
+                # <<< ИСПРАВЛЕНИЕ ЗДЕСЬ >>>
                 @st.cache_data
                 def convert_df_to_excel(df):
-                    return df.to_excel(index=False).encode('utf-8')
+                    # Убран лишний .encode('utf-8')
+                    return df.to_excel(index=False)
                 
                 excel_data = convert_df_to_excel(table_df[columns_to_show])
                 st.download_button(
                     label="📥 Экспорт таблицы расхождений в Excel",
                     data=excel_data,
                     file_name=f"расхождения_{selected_store}_{datetime.now().strftime('%Y%m%d')}.xlsx",
-                    mime="application/vnd.ms-excel"
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" # Более корректный MIME-тип для .xlsx
                 )
             else:
                 st.success("🎉 Расхождений не обнаружено!")
@@ -311,14 +312,14 @@ if st.session_state.processed_df is not None:
                 st.subheader("📊 Сводный анализ по категориям")
                 tab1, tab2 = st.tabs(["По сегментам", "По брендам"])
                 with tab1:
-                    if 'Segment' in store_df.columns:
+                    if 'Segment' in store_df.columns and len(all_segments) > 1:
                         segment_analysis = store_df.groupby('Segment').agg(Plan_GRN=('Plan_GRN', 'sum'), Fact_GRN=('Fact_GRN', 'sum')).reset_index()
                         segment_analysis['Выполнение_%_грн'] = (segment_analysis['Fact_GRN'] / segment_analysis['Plan_GRN'] * 100).replace([np.inf, -np.inf], 0).fillna(0)
                         fig = px.bar(segment_analysis, x='Segment', y='Выполнение_%_грн', title='Выполнение плана по сегментам (%)')
                         fig.add_hline(y=100, line_dash="dash", line_color="red")
                         st.plotly_chart(fig, use_container_width=True)
                 with tab2:
-                    if 'brend' in store_df.columns:
+                    if 'brend' in store_df.columns and len(all_brands) > 1:
                         brand_analysis = store_df.groupby('brend').agg(Plan_GRN=('Plan_GRN', 'sum'), Fact_GRN=('Fact_GRN', 'sum')).reset_index()
                         brand_analysis['Выполнение_%_грн'] = (brand_analysis['Fact_GRN'] / brand_analysis['Plan_GRN'] * 100).replace([np.inf, -np.inf], 0).fillna(0)
                         brand_analysis = brand_analysis.nlargest(15, 'Plan_GRN')
@@ -328,4 +329,4 @@ if st.session_state.processed_df is not None:
 
 # --- Футер ---
 st.markdown("---")
-st.markdown("<div style='text-align: center; color: #666;'>🏆 Финальный План/Факт Анализ v7.0</div>", unsafe_allow_html=True)
+st.markdown("<div style='text-align: center; color: #666;'>🏆 Финальный План/Факт Анализ v7.1</div>", unsafe_allow_html=True)
