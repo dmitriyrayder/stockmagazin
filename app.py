@@ -55,18 +55,16 @@ def run_data_quality_checks(df, table_name):
         st.markdown(f"**Размер:** {df.shape[0]} строк, {df.shape[1]} столбцов.")
         st.dataframe(df.head())
 
-# Функция для конвертации в Excel. Требует установки `pip install xlsxwriter`
 @st.cache_data
 def to_excel(df):
     output = io.BytesIO()
-    # Эта строка использует 'xlsxwriter' как движок
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         df.to_excel(writer, index=False, sheet_name='Report')
     processed_data = output.getvalue()
     return processed_data
 
 # --- Основной интерфейс приложения Streamlit ---
-st.set_page_config(layout="wide") # Делаем приложение на всю ширину экрана
+st.set_page_config(layout="wide")
 st.title("Анализатор 'План/Факт'")
 st.markdown("Загрузите файлы с плановыми и фактическими показателями для их сличения и анализа.")
 
@@ -80,13 +78,11 @@ fact_file = st.sidebar.file_uploader("2. Загрузите файл ФАКТА"
 if plan_file and fact_file:
     df_plan_wide = load_data(plan_file)
     df_fact = load_data(fact_file)
-    
     st.header("1. Проверка исходных данных")
     run_data_quality_checks(df_plan_wide, "План (Исходный)")
     run_data_quality_checks(df_fact, "Факт (Исходный)")
 
     if df_plan_wide is not None and df_fact is not None:
-        
         # --------------------------------------------------------------------- #
         # --- БЛОК 2: ПРЕОБРАЗОВАНИЕ И СЛИЯНИЕ ДАННЫХ ---
         # --------------------------------------------------------------------- #
@@ -98,15 +94,31 @@ if plan_file and fact_file:
                 df_final = pd.merge(
                     df_plan_long, df_fact_prepared, how='outer', on=['ART', 'Magazin'], indicator=True
                 )
-                df_final['Plan_STUKI'] = df_final['Plan_STUKI'].fillna(0).astype(int)
-                df_final['Fact_STUKI'] = df_final['Fact_STUKI'].fillna(0).astype(int)
+                # Обработка пропусков перед расчетами
+                df_final['Plan_STUKI'] = df_final['Plan_STUKI'].fillna(0)
+                df_final['Fact_STUKI'] = df_final['Fact_STUKI'].fillna(0)
                 df_final['Segment'] = df_final['Segment'].fillna('Продажи без плана')
+                df_final['Price'] = df_final['Price'].fillna(0)
+                df_final['Plan_GRN'] = df_final['Plan_GRN'].fillna(0)
+                
+                # Расчеты в ШТУКАХ
                 df_final['Отклонение_штуки'] = df_final['Fact_STUKI'] - df_final['Plan_STUKI']
-                df_final['Выполнение_плана_%'] = (100 * df_final['Fact_STUKI'] / df_final['Plan_STUKI']).replace([float('inf'), -float('inf')], 100).fillna(0).round(2)
+                df_final['Выполнение_плана_%'] = (100 * df_final['Fact_STUKI'] / df_final['Plan_STUKI']).replace([float('inf'), -float('inf')], 100).fillna(0)
+                
+                # НОВЫЙ БЛОК РАСЧЕТОВ: ДЕНЬГИ
+                df_final['Fact_GRN'] = (df_final['Fact_STUKI'] * df_final['Price']).fillna(0)
+                df_final['Отклонение_грн'] = df_final['Fact_GRN'] - df_final['Plan_GRN']
+                
+                # Приводим типы данных к целочисленным для аккуратности
+                int_cols = ['Plan_STUKI', 'Fact_STUKI', 'Отклонение_штуки', 'Price', 'Plan_GRN', 'Fact_GRN', 'Отклонение_грн']
+                for col in int_cols:
+                    df_final[col] = df_final[col].astype(int)
+
                 st.success("Данные успешно обработаны и объединены!")
             else:
                 st.error("Ошибка на этапе подготовки данных. Невозможно продолжить.")
                 st.stop()
+        
         st.subheader("Детальная таблица: План/Факт по каждому товару")
         st.dataframe(df_final)
 
@@ -114,55 +126,96 @@ if plan_file and fact_file:
         # --- БЛОК 3: АНАЛИТИЧЕСКАЯ СВОДКА ---
         # --------------------------------------------------------------------- #
         st.header("3. Аналитическая сводка по Магазинам и Сегментам")
+
+        # --- НОВЫЙ ЭЛЕМЕНТ: СЛАЙДЕР-ФИЛЬТР ДЛЯ СВОДНЫХ ТАБЛИЦ ---
+        max_perc_pivot = st.slider(
+            'Показать магазины/сегменты с выполнением плана ДО, %', 
+            min_value=0, 
+            max_value=200, 
+            value=100, # По умолчанию показываем тех, кто выполнил план на 100% или меньше
+            help="Используйте этот слайдер, чтобы отфильтровать магазины, которые перевыполнили план и оставить только проблемные."
+        )
+
+        st.subheader("Сводка в ШТУКАХ")
         try:
-            pivot_table = pd.pivot_table(
+            pivot_stuki = pd.pivot_table(
                 df_final, index=['Magazin', 'Segment'],
                 values=['Plan_STUKI', 'Fact_STUKI', 'Отклонение_штуки'], aggfunc='sum'
             )
-            pivot_table['Выполнение_плана_%'] = (
-                100 * pivot_table['Fact_STUKI'] / pivot_table['Plan_STUKI']
-            ).replace([float('inf'), -float('inf')], 100).fillna(0).round(2)
+            pivot_stuki['Выполнение_плана_%'] = (100 * pivot_stuki['Fact_STUKI'] / pivot_stuki['Plan_STUKI']).replace([float('inf'), -float('inf')], 100).fillna(0)
             
-            # Эта строка требует установки `pip install matplotlib` для .background_gradient()
-            st.dataframe(pivot_table.style.format({
+            # Применяем фильтр со слайдера
+            filtered_pivot_stuki = pivot_stuki[pivot_stuki['Выполнение_плана_%'] <= max_perc_pivot]
+
+            st.dataframe(filtered_pivot_stuki.style.format({
                 'Plan_STUKI': '{:,.0f}', 'Fact_STUKI': '{:,.0f}',
-                'Отклонение_штуки': '{:,.0f}', 'Выполнение_плана_%': '{:.2f}%'
+                'Отклонение_штуки': '{:,.0f}', 'Выполнение_плана_%': '{:.1f}%'
             }).background_gradient(cmap='RdYlGn', subset=['Выполнение_плана_%'], vmin=0, vmax=120))
         except Exception as e:
-            st.error(f"Не удалось построить сводную таблицу: {e}")
+            st.error(f"Не удалось построить сводную таблицу в штуках: {e}")
+
+        # --- НОВЫЙ БЛОК: СВОДКА В ДЕНЬГАХ ---
+        st.subheader("Сводка в ДЕНЬГАХ (ГРН)")
+        try:
+            pivot_grn = pd.pivot_table(
+                df_final, index=['Magazin', 'Segment'],
+                values=['Plan_GRN', 'Fact_GRN', 'Отклонение_грн'], aggfunc='sum'
+            )
+            pivot_grn['Выполнение_плана_%'] = (100 * pivot_grn['Fact_GRN'] / pivot_grn['Plan_GRN']).replace([float('inf'), -float('inf')], 100).fillna(0)
+            
+            # Применяем тот же фильтр
+            filtered_pivot_grn = pivot_grn[pivot_grn['Выполнение_плана_%'] <= max_perc_pivot]
+            
+            st.dataframe(filtered_pivot_grn.style.format({
+                'Plan_GRN': '{:,.0f} грн', 'Fact_GRN': '{:,.0f} грн',
+                'Отклонение_грн': '{:,.0f} грн', 'Выполнение_плана_%': '{:.1f}%'
+            }).background_gradient(cmap='RdYlGn', subset=['Выполнение_плана_%'], vmin=0, vmax=120))
+        except Exception as e:
+            st.error(f"Не удалось построить сводную таблицу в деньгах: {e}")
 
         # --------------------------------------------------------------------- #
         # --- БЛОК 4: ИНТЕРАКТИВНЫЕ ФИЛЬТРЫ ---
         # --------------------------------------------------------------------- #
         st.header("4. Глубокий анализ и фильтрация")
-        st.info("Выберите магазины и сегменты для детального просмотра и выгрузки.")
-        all_magazins = sorted(df_final['Magazin'].unique())
-        all_segments = sorted(df_final['Segment'].unique())
-        selected_magazins = st.multiselect(
-            'Выберите Магазин(ы)', options=all_magazins, default=all_magazins
-        )
-        selected_segments = st.multiselect(
-            'Выберите Сегмент(ы)', options=all_segments, default=all_segments
+        st.info("Выберите магазины/сегменты и установите порог выполнения плана для детального просмотра и выгрузки.")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            all_magazins = sorted(df_final['Magazin'].unique())
+            selected_magazins = st.multiselect('Выберите Магазин(ы)', options=all_magazins, default=all_magazins)
+        with col2:
+            all_segments = sorted(df_final['Segment'].unique())
+            selected_segments = st.multiselect('Выберите Сегмент(ы)', options=all_segments, default=all_segments)
+
+        # --- НОВЫЙ ЭЛЕМЕНТ: СЛАЙДЕР ДЛЯ ДЕТАЛЬНОЙ ТАБЛИЦЫ ---
+        max_perc_detail = st.slider(
+            'Показать позиции с выполнением плана ДО, %',
+            min_value=0, max_value=200, value=100, key='detail_slider'
         )
 
         # --------------------------------------------------------------------- #
         # --- БЛОК 5: ОТФИЛЬТРОВАННАЯ ТАБЛИЦА И ВЫГРУЗКА ---
         # --------------------------------------------------------------------- #
-        st.subheader("Отфильтрованные данные")
+        st.subheader("Отфильтрованные данные для доукомплектации")
         if not selected_magazins or not selected_segments:
             st.warning("Пожалуйста, выберите хотя бы один магазин и один сегмент.")
         else:
+            # Сначала фильтруем по спискам магазинов и сегментов
             filtered_df = df_final[
                 df_final['Magazin'].isin(selected_magazins) &
                 df_final['Segment'].isin(selected_segments)
-            ].copy()
-            st.dataframe(filtered_df)
-            st.success(f"Найдено {len(filtered_df)} позиций, соответствующих вашему выбору.")
-            excel_data = to_excel(filtered_df)
+            ]
+            # Затем применяем фильтр по проценту выполнения плана
+            final_filtered_df = filtered_df[filtered_df['Выполнение_плана_%'] <= max_perc_detail].copy()
+            
+            st.dataframe(final_filtered_df)
+            st.success(f"Найдено {len(final_filtered_df)} позиций, соответствующих вашему выбору.")
+            
+            excel_data = to_excel(final_filtered_df)
             st.download_button(
                 label="📥 Скачать отчет в Excel",
                 data=excel_data,
-                file_name="plan_fact_report_filtered.xlsx",
+                file_name="dowork_report.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
 else:
