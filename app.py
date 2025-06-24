@@ -7,7 +7,7 @@ from datetime import datetime
 
 # --- Настройка страницы ---
 st.set_page_config(
-    page_title="Финальный План/Факт Анализ v7.3", # Обновим версию
+    page_title="Финальный План/Факт Анализ v7.4", # Обновим версию
     page_icon="🏆",
     layout="wide"
 )
@@ -280,10 +280,22 @@ if st.session_state.processed_df is not None:
                 
                 # <<< ИСПРАВЛЕНИЕ ЗДЕСЬ >>>
                 def convert_df_to_excel(df):
-                    """Готовит DataFrame для экспорта в Excel, очищая несовместимые значения."""
+                    """Готовит DataFrame для экспорта, принудительно преобразуя данные в совместимые с Excel типы."""
                     df_for_export = df.copy()
-                    # Заменяем бесконечность (np.inf) на None, т.к. Excel не может ее обработать
-                    df_for_export.replace([np.inf, -np.inf], None, inplace=True)
+                    
+                    # Список колонок, которые должны быть числовыми
+                    numeric_cols = [
+                        'Price', 'Plan_STUKI', 'Fact_STUKI', 'Отклонение_шт',
+                        'Отклонение_%_шт', 'Отклонение_грн'
+                    ]
+
+                    # Принудительно конвертируем эти колонки в числовой формат.
+                    # errors='coerce' превратит любые нечисловые значения (включая np.inf) в NaN.
+                    # Pandas прекрасно экспортирует NaN как пустую ячейку в Excel.
+                    for col in numeric_cols:
+                        if col in df_for_export.columns:
+                            df_for_export[col] = pd.to_numeric(df_for_export[col], errors='coerce')
+                            
                     return df_for_export.to_excel(index=False)
                 
                 excel_data = convert_df_to_excel(table_df[columns_to_show])
@@ -317,4 +329,4 @@ if st.session_state.processed_df is not None:
 
 # --- Футер ---
 st.markdown("---")
-st.markdown("<div style='text-align: center; color: #666;'>🏆 Финальный План/Факт Анализ v7.3</div>", unsafe_allow_html=True)
+st.markdown("<div style='text-align: center; color: #666;'>🏆 Финальный План/Факт Анализ v7.4</div>", unsafe_allow_html=True)
