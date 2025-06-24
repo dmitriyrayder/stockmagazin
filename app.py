@@ -7,7 +7,7 @@ from datetime import datetime
 
 # --- Настройка страницы ---
 st.set_page_config(
-    page_title="Финальный План/Факт Анализ v7.1", # Обновим версию
+    page_title="Финальный План/Факт Анализ v7.2", # Обновим версию
     page_icon="🏆",
     layout="wide"
 )
@@ -292,9 +292,8 @@ if st.session_state.processed_df is not None:
                 st.dataframe(table_df[columns_to_show], use_container_width=True, height=400)
                 
                 # <<< ИСПРАВЛЕНИЕ ЗДЕСЬ >>>
-                @st.cache_data
+                # Декоратор @st.cache_data убран, так как он вызывал ошибку хеширования DataFrame
                 def convert_df_to_excel(df):
-                    # Убран лишний .encode('utf-8')
                     return df.to_excel(index=False)
                 
                 excel_data = convert_df_to_excel(table_df[columns_to_show])
@@ -302,7 +301,7 @@ if st.session_state.processed_df is not None:
                     label="📥 Экспорт таблицы расхождений в Excel",
                     data=excel_data,
                     file_name=f"расхождения_{selected_store}_{datetime.now().strftime('%Y%m%d')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" # Более корректный MIME-тип для .xlsx
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
             else:
                 st.success("🎉 Расхождений не обнаружено!")
@@ -329,4 +328,4 @@ if st.session_state.processed_df is not None:
 
 # --- Футер ---
 st.markdown("---")
-st.markdown("<div style='text-align: center; color: #666;'>🏆 Финальный План/Факт Анализ v7.1</div>", unsafe_allow_html=True)
+st.markdown("<div style='text-align: center; color: #666;'>🏆 Финальный План/Факт Анализ v7.2</div>", unsafe_allow_html=True)
