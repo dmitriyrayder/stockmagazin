@@ -5,7 +5,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
 
-st.set_page_config(page_title="План/Факт Анализ v6.4", page_icon="🏆", layout="wide")
+st.set_page_config(page_title="План/Факт Анализ v6.5", page_icon="🏆", layout="wide")
 st.title("🏆 Универсальный сервис для План/Факт анализа")
 
 # --- Вспомогательные функции ---
@@ -31,12 +31,12 @@ def transform_wide_to_flat(_wide_df, id_vars):
     """Преобразует широкий DataFrame плана в плоский."""
     plan_data_cols = [col for col in _wide_df.columns if col not in id_vars]
     
-    magazin_cols = sorted([col for col in plan_data_cols if col.split('.')[0] == 'Magazin'])
-    stuki_cols = sorted([col for col in plan_data_cols if col.split('.')[0] == 'Plan_STUKI'])
-    grn_cols = sorted([col for col in plan_data_cols if col.split('.')[0] == 'Plan_GRN'])
+    magazin_cols = sorted([col for col in plan_data_cols if str(col).startswith('Magazin.')])
+    stuki_cols = sorted([col for col in plan_data_cols if str(col).startswith('Plan_STUKI.')])
+    grn_cols = sorted([col for col in plan_data_cols if str(col).startswith('Plan_GRN.')])
 
-    if not (len(magazin_cols) == len(stuki_cols) == len(grn_cols)):
-        st.error("Ошибка структуры файла Плана: Количество колонок не совпадает.")
+    if not (len(magazin_cols) == len(stuki_cols) == len(grn_cols) and len(magazin_cols) > 0):
+        st.error("Ошибка структуры широкого файла Плана: Количество колонок 'Magazin.*', 'Plan_STUKI.*', 'Plan_GRN.*' не совпадает или равно нулю. Проверьте названия колонок.")
         return None
         
     flat_parts = []
@@ -48,6 +48,9 @@ def transform_wide_to_flat(_wide_df, id_vars):
             magazin_cols[i]: 'магазин', stuki_cols[i]: 'Plan_STUKI', grn_cols[i]: 'Plan_GRN'
         }, inplace=True)
         flat_parts.append(part_df)
+        
+    if not flat_parts:
+        return None # Дополнительная проверка на пустой список
         
     flat_df = pd.concat(flat_parts, ignore_index=True)
     flat_df.dropna(subset=['магазин'], inplace=True)
@@ -101,12 +104,13 @@ with col1:
         )
         if g_sheet_url:
             try:
-                # Преобразуем URL для прямого скачивания CSV
                 csv_url = g_sheet_url.replace("/edit?usp=sharing", "/export?format=csv").replace("/edit", "/export?format=csv")
-                plan_df_original = pd.read_csv(csv_url)
-                st.info(f"✅ Таблица успешно загружена. Найдено {len(plan_df_original)} строк.")
+                # --- ИЗМЕНЕНИЕ ЗДЕСЬ ---
+                # Добавлены параметры sep=None и engine='python' для автоопределения разделителя (`,` или `;`)
+                plan_df_original = pd.read_csv(csv_url, sep=None, engine='python')
+                st.info(f"✅ Таблица успешно загружена. Найдено {len(plan_df_original)} строк и {len(plan_df_original.columns)} колонок.")
             except Exception as e:
-                st.error(f"Не удалось загрузить таблицу. Ошибка: {e}")
+                st.error(f"Не удалось загрузить или обработать таблицу. Ошибка: {e}")
                 st.warning("Убедитесь, что ссылка верна и доступ к таблице открыт (хотя бы для просмотра).")
 
 with col2:
@@ -136,6 +140,7 @@ if plan_df_original is not None and fact_df_original is not None:
 
     st.header("2. Настройка и обработка данных")
     
+    st.info("Ваша Google Таблица имеет **'Плоский (стандартный)'** формат. Пожалуйста, выберите его.")
     plan_format = st.radio(
         "Выберите формат данных 'План':",
         ('Плоский (стандартный)', 'Широкий (горизонтальный)'), horizontal=True,
@@ -164,7 +169,7 @@ if plan_df_original is not None and fact_df_original is not None:
                 'Plan_STUKI': 'Плановые остатки (шт.)', 'Plan_GRN': 'Плановые остатки (грн.)'
             }
             for internal, display in PLAN_REQUIRED_FIELDS.items():
-                default_selection = [c for c in plan_cols if c.lower() == internal.lower() or c.lower() == display.lower()]
+                default_selection = [c for c in plan_cols if str(c).lower() == internal.lower() or str(c).lower() == display.lower()]
                 default_index = plan_cols.index(default_selection[0]) if default_selection else 0
                 
                 plan_mappings[internal] = st.selectbox(
@@ -178,7 +183,7 @@ if plan_df_original is not None and fact_df_original is not None:
             'brend': 'Бренд', 'Fact_STUKI': 'Фактические остатки (шт.)'
         }
         for internal, display in FACT_REQUIRED_FIELDS.items():
-            default_selection = [c for c in fact_cols if c.lower() == internal.lower() or c.lower() == display.lower()]
+            default_selection = [c for c in fact_cols if str(c).lower() == internal.lower() or str(c).lower() == display.lower()]
             default_index = fact_cols.index(default_selection[0]) if default_selection else 0
             
             fact_mappings[internal] = st.selectbox(
@@ -206,7 +211,7 @@ if plan_df_original is not None and fact_df_original is not None:
                 plan_df = plan_df_original[list(plan_rename_map.keys())].rename(columns=plan_rename_map)
                 
             if plan_df is None:
-                st.error("Не удалось обработать данные 'План'.")
+                st.error("Не удалось обработать данные 'План'. Проверьте настройки формата и колонок.")
                 st.stop()
             
             # Обработка файла 'Факт'
@@ -276,8 +281,9 @@ if plan_df_original is not None and fact_df_original is not None:
 
 # --- Аналитика ---
 if st.session_state.processed_df is not None:
+    # Весь остальной код аналитики остается без изменений...
     processed_df = st.session_state.processed_df
-
+    # ...
     st.header("3. Быстрый анализ отклонений по магазинам и сегментам")
     
     if 'Segment' in processed_df.columns:
