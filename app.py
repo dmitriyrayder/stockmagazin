@@ -8,6 +8,42 @@ st.set_page_config(page_title="Финальный План/Факт Анализ
 
 st.title("🏆 Универсальный сервис для План/Факт анализа")
 
+# --- Функция для анализа качества данных ---
+@st.cache_data
+def analyze_data_quality(df, file_name):
+    """Анализирует качество данных в DataFrame."""
+    quality_info = []
+    
+    for col in df.columns:
+        total_rows = len(df)
+        non_null_count = df[col].notna().sum()
+        null_count = df[col].isna().sum()
+        
+        # Для числовых колонок проверяем валидность
+        if df[col].dtype in ['int64', 'float64']:
+            valid_numeric = pd.to_numeric(df[col], errors='coerce').notna().sum()
+            quality_info.append({
+                'Файл': file_name,
+                'Колонка': col,
+                'Общее количество': total_rows,
+                'Заполнено': non_null_count,
+                'Пустые': null_count,
+                'Валидные числа': valid_numeric if df[col].dtype in ['int64', 'float64'] else 'N/A',
+                'Процент заполнения': f"{(non_null_count/total_rows*100):.1f}%"
+            })
+        else:
+            quality_info.append({
+                'Файл': file_name,
+                'Колонка': col,
+                'Общее количество': total_rows,
+                'Заполнено': non_null_count,
+                'Пустые': null_count,
+                'Валидные числа': 'N/A',
+                'Процент заполнения': f"{(non_null_count/total_rows*100):.1f}%"
+            })
+    
+    return pd.DataFrame(quality_info)
+
 # --- Функция для преобразования широкого формата ---
 @st.cache_data
 def transform_wide_to_flat(_wide_df, id_vars):
@@ -59,9 +95,31 @@ with col1:
 with col2:
     fact_file = st.file_uploader("Загрузите файл 'Факт'", type=["xlsx", "xls"], key="fact_uploader")
 
+# --- НОВОЕ: Анализ качества данных после загрузки ---
 if plan_file and fact_file:
     plan_df_original = pd.read_excel(plan_file)
     fact_df_original = pd.read_excel(fact_file)
+    
+    st.header("1.1. Анализ качества загруженных данных")
+    
+    # Анализируем качество данных
+    plan_quality = analyze_data_quality(plan_df_original, "План")
+    fact_quality = analyze_data_quality(fact_df_original, "Факт")
+    
+    # Объединяем результаты
+    quality_df = pd.concat([plan_quality, fact_quality], ignore_index=True)
+    
+    st.subheader("📊 Статистика по колонкам")
+    st.dataframe(quality_df, use_container_width=True)
+    
+    # Показываем общую статистику
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("Колонок в файле План", len(plan_df_original.columns))
+        st.metric("Строк в файле План", len(plan_df_original))
+    with col2:
+        st.metric("Колонок в файле Факт", len(fact_df_original.columns))
+        st.metric("Строк в файле Факт", len(fact_df_original))
 
     st.header("2. Настройка и обработка данных")
     
@@ -158,7 +216,8 @@ if st.session_state.processed_df is not None:
     processed_df = st.session_state.processed_df
     
     st.header("3. Быстрый анализ отклонений по магазинам")
-    # ... (здесь идет блок быстрого анализа, он не меняется)
+    
+    # Исходный анализ по магазинам
     store_summary = processed_df.groupby('магазин').agg(
         Plan_STUKI=('Plan_STUKI', 'sum'), Fact_STUKI=('Fact_STUKI', 'sum'),
         Plan_GRN=('Plan_GRN', 'sum'), Fact_GRN=('Fact_GRN', 'sum')
@@ -171,6 +230,90 @@ if st.session_state.processed_df is not None:
     
     st.write(f"**Найдено {len(problem_stores_df)} магазинов с отклонением > {threshold}%:**")
     st.dataframe(problem_stores_df, use_container_width=True)
+    
+    # --- НОВОЕ: Анализ по сегментам ---
+    st.subheader("📈 Структура план/факт в разрезе сегментов")
+    
+    # Проверяем наличие колонки Segment
+    if 'Segment' in processed_df.columns:
+        # Выбор магазина для анализа сегментов
+        selected_store_for_segments = st.selectbox(
+            "Выберите магазин для анализа по сегментам:",
+            options=sorted(processed_df['магазин'].dropna().unique()),
+            key="segment_analysis_store"
+        )
+        
+        if selected_store_for_segments:
+            # Фильтруем данные по выбранному магазину
+            store_data = processed_df[processed_df['магазин'] == selected_store_for_segments]
+            
+            # Анализ по сегментам
+            segment_summary = store_data.groupby('Segment').agg(
+                Plan_STUKI=('Plan_STUKI', 'sum'),
+                Fact_STUKI=('Fact_STUKI', 'sum'),
+                Plan_GRN=('Plan_GRN', 'sum'),
+                Fact_GRN=('Fact_GRN', 'sum'),
+                Количество_позиций=('ART', 'count')
+            ).reset_index()
+            
+            # Расчет отклонений по сегментам
+            segment_summary['Отклонение_шт'] = segment_summary['Fact_STUKI'] - segment_summary['Plan_STUKI']
+            segment_summary['Отклонение_%_шт'] = np.where(
+                segment_summary['Plan_STUKI'] > 0, 
+                (segment_summary['Отклонение_шт'] / segment_summary['Plan_STUKI'] * 100).round(1), 
+                np.inf
+            )
+            segment_summary['Отклонение_GRN'] = segment_summary['Fact_GRN'] - segment_summary['Plan_GRN']
+            segment_summary['Отклонение_%_GRN'] = np.where(
+                segment_summary['Plan_GRN'] > 0, 
+                (segment_summary['Отклонение_GRN'] / segment_summary['Plan_GRN'] * 100).round(1), 
+                np.inf
+            )
+            
+            # Отображение таблицы по сегментам
+            st.write(f"**Анализ по сегментам для магазина '{selected_store_for_segments}':**")
+            st.dataframe(segment_summary, use_container_width=True)
+            
+            # Визуализация по сегментам
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                # График план vs факт по штукам
+                fig_stuki = px.bar(
+                    segment_summary, 
+                    x='Segment', 
+                    y=['Plan_STUKI', 'Fact_STUKI'],
+                    title=f"План vs Факт (штуки) - {selected_store_for_segments}",
+                    barmode='group'
+                )
+                st.plotly_chart(fig_stuki, use_container_width=True)
+            
+            with col2:
+                # График план vs факт по гривнам
+                fig_grn = px.bar(
+                    segment_summary, 
+                    x='Segment', 
+                    y=['Plan_GRN', 'Fact_GRN'],
+                    title=f"План vs Факт (грн) - {selected_store_for_segments}",
+                    barmode='group'
+                )
+                st.plotly_chart(fig_grn, use_container_width=True)
+            
+            # Показываем топ сегментов с наибольшими отклонениями
+            st.subheader("🔍 Проблемные сегменты")
+            problem_segments = segment_summary[
+                (abs(segment_summary['Отклонение_%_шт']) > threshold) |
+                (abs(segment_summary['Отклонение_%_GRN']) > threshold)
+            ].sort_values('Отклонение_%_шт', key=abs, ascending=False)
+            
+            if not problem_segments.empty:
+                st.write(f"**Сегменты с отклонением > {threshold}%:**")
+                st.dataframe(problem_segments, use_container_width=True)
+            else:
+                st.success("Все сегменты в пределах допустимых отклонений!")
+    
+    else:
+        st.warning("Колонка 'Segment' не найдена в данных. Анализ по сегментам недоступен.")
 
     # --- Детальный анализ ---
     st.sidebar.header("🔍 Детальный анализ")
@@ -184,10 +327,6 @@ if st.session_state.processed_df is not None:
         selected_store = st.sidebar.selectbox("Выберите магазин:", options=stores_for_selection)
         if selected_store:
             st.header(f"4. Детальный анализ магазина: '{selected_store}'")
-            # ... (здесь идет весь блок детального анализа с графиками, он не меняется)
-            # Фильтрация, метрики, круговая диаграмма, спидометры, таблица расхождений...
-            # Код из предыдущей полной версии можно вставить сюда без изменений.
-            # Для краткости я его не дублирую.
             st.info(f"Здесь будет отображена полная аналитика для магазина {selected_store}, как в предыдущей версии.")
     else:
         st.sidebar.warning("Нет магазинов для выбора.")
