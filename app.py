@@ -5,7 +5,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
 
-st.set_page_config(page_title="План/Факт Анализ v6.1", page_icon="🏆", layout="wide")
+st.set_page_config(page_title="План/Факт Анализ v6.2", page_icon="🏆", layout="wide")
 st.title("🏆 Универсальный сервис для План/Факт анализа")
 
 # --- Вспомогательные функции ---
@@ -216,75 +216,78 @@ if plan_file and fact_file:
 if st.session_state.processed_df is not None:
     processed_df = st.session_state.processed_df
 
-    st.header("3. Быстрый анализ отклонений по магазинам")
+    # --- ИЗМЕНЕННЫЙ БЛОК 3 ---
+    st.header("3. Быстрый анализ отклонений по магазинам и сегментам")
     
-    # Агрегация по магазинам
-    store_summary = processed_df.groupby('магазин').agg({
-        'Plan_STUKI': 'sum', 'Fact_STUKI': 'sum', 'Plan_GRN': 'sum', 'Fact_GRN': 'sum'
-    }).reset_index()
-    
-    store_summary['Отклонение_шт'] = store_summary['Fact_STUKI'] - store_summary['Plan_STUKI']
-    store_summary['Отклонение_грн'] = store_summary['Fact_GRN'] - store_summary['Plan_GRN']
-    store_summary['Отклонение_%_шт'] = np.where(
-        store_summary['Plan_STUKI'] > 0, 
-        abs(store_summary['Отклонение_шт']) / store_summary['Plan_STUKI'] * 100,
-        np.where(store_summary['Отклонение_шт'] != 0, np.inf, 0)
-    )
-    store_summary['Отклонение_%_грн'] = np.where(
-        store_summary['Plan_GRN'] > 0, 
-        abs(store_summary['Отклонение_грн']) / store_summary['Plan_GRN'] * 100,
-        np.where(store_summary['Отклонение_грн'] != 0, np.inf, 0)
-    )
-    
-    # Настройки фильтрации
-    col1, col2 = st.columns(2)
-    with col1:
-        threshold = st.number_input("Показать магазины, где отклонение в штуках БОЛЬШЕ чем (%)", min_value=0, max_value=500, value=10, step=5)
-    with col2:
-        sort_by = st.selectbox("Сортировать по", ['Отклонение_%_шт', 'Отклонение_%_грн', 'Отклонение_шт', 'Отклонение_грн'])
-    
-    # Фильтрация проблемных магазинов
-    problem_stores_df = store_summary[store_summary['Отклонение_%_шт'] > threshold].copy().sort_values(by=sort_by, ascending=False)
-    
-    st.write(f"**Найдено {len(problem_stores_df)} магазинов с отклонением > {threshold}%:**")
-    
-    if not problem_stores_df.empty:
-        # Форматирование таблицы
-        display_df = problem_stores_df.copy()
-        for col in ['Plan_STUKI', 'Fact_STUKI']:
-            display_df[col] = display_df[col].astype(int)
-        for col in ['Plan_GRN', 'Fact_GRN', 'Отклонение_грн']:
-            display_df[col] = display_df[col].round(2)
-        for col in ['Отклонение_%_шт', 'Отклонение_%_грн']:
-            display_df[col] = display_df[col].round(1)
+    if 'Segment' in processed_df.columns:
+        # Агрегация по магазинам и сегментам
+        group_by_cols = ['магазин', 'Segment']
+        summary_df = processed_df.groupby(group_by_cols).agg({
+            'Plan_STUKI': 'sum', 'Fact_STUKI': 'sum', 'Plan_GRN': 'sum', 'Fact_GRN': 'sum'
+        }).reset_index()
         
-        st.dataframe(display_df, use_container_width=True)
+        summary_df['Отклонение_шт'] = summary_df['Fact_STUKI'] - summary_df['Plan_STUKI']
+        summary_df['Отклонение_грн'] = summary_df['Fact_GRN'] - summary_df['Plan_GRN']
+        summary_df['Отклонение_%_шт'] = np.where(
+            summary_df['Plan_STUKI'] > 0, 
+            abs(summary_df['Отклонение_шт']) / summary_df['Plan_STUKI'] * 100,
+            np.where(summary_df['Отклонение_шт'] != 0, np.inf, 0)
+        )
+        summary_df['Отклонение_%_грн'] = np.where(
+            summary_df['Plan_GRN'] > 0, 
+            abs(summary_df['Отклонение_грн']) / summary_df['Plan_GRN'] * 100,
+            np.where(summary_df['Отклонение_грн'] != 0, np.inf, 0)
+        )
         
-        # Графики
-        st.subheader("Визуализация отклонений")
-        tab1, tab2 = st.tabs(["📊 По количеству", "💰 По деньгам"])
+        # Настройки фильтрации
+        col1, col2 = st.columns(2)
+        with col1:
+            threshold = st.number_input("Показать комбинации, где отклонение в штуках БОЛЬШЕ чем (%)", min_value=0, max_value=500, value=10, step=5)
+        with col2:
+            sort_by = st.selectbox("Сортировать по", ['Отклонение_%_шт', 'Отклонение_%_грн', 'Отклонение_шт', 'Отклонение_грн'], key="sort_summary")
         
-        with tab1:
-            fig_qty = px.bar(problem_stores_df.head(10), x='магазин', y='Отклонение_%_шт',
-                           title='ТОП-10 магазинов по отклонению в штуках (%)',
-                           color='Отклонение_%_шт', color_continuous_scale='RdYlBu_r')
-            fig_qty.update_xaxes(tickangle=45)
-            st.plotly_chart(fig_qty, use_container_width=True)
+        # Фильтрация проблемных комбинаций
+        problem_df = summary_df[summary_df['Отклонение_%_шт'] > threshold].copy().sort_values(by=sort_by, ascending=False)
         
-        with tab2:
-            fig_money = px.bar(problem_stores_df.head(10), x='магазин', y='Отклонение_%_грн',
-                             title='ТОП-10 магазинов по отклонению в деньгах (%)',
-                             color='Отклонение_%_грн', color_continuous_scale='RdYlBu_r')
-            fig_money.update_xaxes(tickangle=45)
-            st.plotly_chart(fig_money, use_container_width=True)
+        st.write(f"**Найдено {len(problem_df)} комбинаций 'Магазин-Сегмент' с отклонением > {threshold}%:**")
+        
+        if not problem_df.empty:
+            # Форматирование таблицы
+            display_df_summary = problem_df.copy()
+            for col in ['Plan_STUKI', 'Fact_STUKI', 'Отклонение_шт']:
+                display_df_summary[col] = display_df_summary[col].astype(int)
+            for col in ['Plan_GRN', 'Fact_GRN', 'Отклонение_грн']:
+                display_df_summary[col] = display_df_summary[col].round(2)
+            for col in ['Отклонение_%_шт', 'Отклонение_%_грн']:
+                display_df_summary[col] = display_df_summary[col].round(1)
+            
+            st.dataframe(display_df_summary.rename(columns={
+                'магазин': 'Магазин', 'Segment': 'Сегмент', 'Plan_STUKI': 'План, шт', 'Fact_STUKI': 'Факт, шт',
+                'Plan_GRN': 'План, грн', 'Fact_GRN': 'Факт, грн', 'Отклонение_шт': 'Откл, шт', 'Отклонение_грн': 'Откл, грн',
+                'Отклонение_%_шт': 'Откл, % шт', 'Отклонение_%_грн': 'Откл, % грн'
+            }), use_container_width=True, height=500)
+            
+            # --- НОВЫЙ БЛОК: Экспорт таблицы ---
+            if st.button("📥 Экспорт результатов анализа в Excel"):
+                export_df = display_df_summary.rename(columns={
+                    'магазин': 'Магазин', 'Segment': 'Сегмент', 'Plan_STUKI': 'План, шт', 'Fact_STUKI': 'Факт, шт',
+                    'Plan_GRN': 'План, грн', 'Fact_GRN': 'Факт, грн', 'Отклонение_шт': 'Отклонение, шт', 'Отклонение_грн': 'Отклонение, грн',
+                    'Отклонение_%_шт': 'Отклонение, % шт', 'Отклонение_%_грн': 'Отклонение, % грн'
+                })
+                export_df.to_excel(f"анализ_отклонений_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx", index=False)
+                st.success("Файл экспортирован!")
+
+        else:
+            st.info("Нет комбинаций 'Магазин-Сегмент' с отклонением больше заданного порога.")
     else:
-        st.info("Нет магазинов с отклонением больше заданного порога.")
+        st.warning("Колонка 'Segment' не найдена в данных. Анализ по сегментам недоступен.")
+    # --- КОНЕЦ ИЗМЕНЕННОГО БЛОКА 3 ---
 
     # --- Детальный анализ ---
     st.sidebar.header("🔍 Детальный анализ")
     
     all_stores_list = sorted(processed_df['магазин'].dropna().unique())
-    problem_stores_list = sorted(problem_stores_df['магазин'].unique()) if not problem_stores_df.empty else []
+    problem_stores_list = sorted(problem_df['магазин'].unique()) if 'problem_df' in locals() and not problem_df.empty else []
     
     analysis_scope = st.sidebar.radio("Область анализа:", ('Все магазины', 'Только проблемные'))
     stores_for_selection = problem_stores_list if analysis_scope == 'Только проблемные' and problem_stores_list else all_stores_list
@@ -350,38 +353,34 @@ if st.session_state.processed_df is not None:
                 st.metric("Выполнение по стоимости", f"{metrics['money_completion']:.1f}%",
                          delta=f"{metrics['money_completion'] - 100:.1f}%", delta_color=completion_color)
 
-            # 3. Структура сегментов (ИЗМЕНЕННЫЙ БЛОК)
+            # --- ИЗМЕНЕННЫЙ БЛОК 4. СТРУКТУРА СЕГМЕНТОВ ---
             if 'Segment' in filtered_df.columns and filtered_df['Segment'].nunique() > 1:
                 st.subheader("🥧 Структура сегментов (по деньгам)")
                 
-                # Агрегируем данные по сегментам из отфильтрованного датафрейма
                 segment_data = filtered_df.groupby('Segment').agg(
                     Plan_GRN=('Plan_GRN', 'sum'),
                     Fact_GRN=('Fact_GRN', 'sum')
                 ).reset_index()
 
-                # Получаем общие суммы из уже рассчитанных метрик
                 total_plan_grn = metrics['total_plan_money']
                 total_fact_grn = metrics['total_fact_money']
                 
-                # Рассчитываем долю каждого сегмента в плане и факте (%)
                 segment_data['Структура План, %'] = (segment_data['Plan_GRN'] / total_plan_grn * 100) if total_plan_grn > 0 else 0
                 segment_data['Структура Факт, %'] = (segment_data['Fact_GRN'] / total_fact_grn * 100) if total_fact_grn > 0 else 0
-
-                # Рассчитываем отклонение в процентных пунктах (п.п.)
                 segment_data['Отклонение, п.п.'] = segment_data['Структура Факт, %'] - segment_data['Структура План, %']
 
-                # Отбираем колонки для отображения
-                display_table = segment_data[[
-                    'Segment', 'Структура План, %', 'Структура Факт, %', 'Отклонение, п.п.'
-                ]].rename(columns={'Segment': 'Сегмент'})
+                display_table = segment_data.rename(columns={
+                    'Segment': 'Сегмент', 'Plan_GRN': 'План, грн', 'Fact_GRN': 'Факт, грн'
+                })
 
-                # Сортируем по плановой доле для логичного отображения
                 display_table = display_table.sort_values(by='Структура План, %', ascending=False)
-
+                
+                # Отображаем таблицу с числовыми и процентными показателями
                 st.dataframe(
                     display_table,
                     column_config={
+                        "План, грн": st.column_config.NumberColumn(format="%.0f"),
+                        "Факт, грн": st.column_config.NumberColumn(format="%.0f"),
                         "Структура План, %": st.column_config.ProgressColumn(
                             "Структура План, %",
                             help="Доля сегмента в общей сумме Плана (по деньгам)",
@@ -405,6 +404,7 @@ if st.session_state.processed_df is not None:
                     use_container_width=True,
                     hide_index=True
                 )
+            # --- КОНЕЦ ИЗМЕНЕННОГО БЛОКА ---
 
             # 4. Спидометры
             if selected_segment != 'Все':
@@ -437,7 +437,7 @@ if st.session_state.processed_df is not None:
                     st.plotly_chart(fig_gauge_money, use_container_width=True)
 
             # 5. Анализ расхождений
-            st.subheader("⚠️ Анализ расхождений")
+            st.subheader("⚠️ Анализ расхождений по позициям")
             discrepancy_df = filtered_df[(filtered_df['Отклонение_шт'] != 0) | (filtered_df['Отклонение_грн'] != 0)].copy()
             
             if not discrepancy_df.empty:
@@ -446,13 +446,12 @@ if st.session_state.processed_df is not None:
                     st.metric("Позиций с расхождениями", len(discrepancy_df))
                 with col2:
                     overstock = len(discrepancy_df[discrepancy_df['Отклонение_шт'] > 0])
-                    st.metric("Переостаток", overstock)
+                    st.metric("Переостаток (позиций)", overstock)
                 with col3:
                     understock = len(discrepancy_df[discrepancy_df['Отклонение_шт'] < 0])
-                    st.metric("Недостаток", understock)
+                    st.metric("Недостаток (позиций)", understock)
                 
-                # Настройки отображения таблицы
-                show_mode = st.radio("Показать:", ['Все расхождения', 'Только переостаток', 'Только недостаток'], horizontal=True)
+                show_mode = st.radio("Показать:", ['Все расхождения', 'Только переостаток', 'Только недостаток'], horizontal=True, key="show_discrepancy")
                 
                 if show_mode == 'Только переостаток':
                     table_df = discrepancy_df[discrepancy_df['Отклонение_шт'] > 0]
@@ -461,33 +460,30 @@ if st.session_state.processed_df is not None:
                 else:
                     table_df = discrepancy_df
                 
-                sort_column = st.selectbox("Сортировать по:", ['Отклонение_%_шт', 'Отклонение_%_грн', 'Отклонение_шт', 'Отклонение_грн'])
+                sort_column = st.selectbox("Сортировать по:", ['Отклонение_%_шт', 'Отклонение_%_грн', 'Отклонение_шт', 'Отклонение_грн'], key="sort_discrepancy")
                 table_df = table_df.sort_values(by=sort_column, ascending=False, key=abs)
                 
-                # Отображение таблицы расхождений
                 display_columns = {'ART': 'Артикул', 'Describe': 'Описание', 'MOD': 'Модель', 'brend': 'Бренд',
                                  'Segment': 'Сегмент', 'Price': 'Цена (грн.)', 'Plan_STUKI': 'План (шт.)',
                                  'Fact_STUKI': 'Факт (шт.)', 'Отклонение_шт': 'Откл. (шт.)', 'Отклонение_%_шт': 'Откл. (%)',
                                  'Plan_GRN': 'План (грн.)', 'Fact_GRN': 'Факт (грн.)', 'Отклонение_грн': 'Откл. (грн.)'}
                 
                 columns_to_show = [col for col in display_columns.keys() if col in table_df.columns]
-                display_df = table_df[columns_to_show].copy()
+                display_df_final = table_df[columns_to_show].copy()
                 
-                # Форматирование числовых колонок
                 for col in ['Plan_STUKI', 'Fact_STUKI', 'Отклонение_шт']:
-                    if col in display_df.columns:
-                        display_df[col] = display_df[col].astype(int)
+                    if col in display_df_final.columns:
+                        display_df_final[col] = display_df_final[col].astype(int)
                 for col in ['Price', 'Plan_GRN', 'Fact_GRN', 'Отклонение_грн']:
-                    if col in display_df.columns:
-                        display_df[col] = display_df[col].round(2)
+                    if col in display_df_final.columns:
+                        display_df_final[col] = display_df_final[col].round(2)
                 for col in ['Отклонение_%_шт', 'Отклонение_%_грн']:
-                    if col in display_df.columns:
-                        display_df[col] = display_df[col].round(1)
+                    if col in display_df_final.columns:
+                        display_df_final[col] = display_df_final[col].round(1)
                 
-                st.dataframe(display_df.rename(columns=display_columns), use_container_width=True, height=400)
+                st.dataframe(display_df_final.rename(columns=display_columns), use_container_width=True, height=400)
                 
-                # Экспорт
                 if st.button("📥 Экспорт таблицы расхождений в Excel"):
-                    output_df = display_df.rename(columns=display_columns)
+                    output_df = display_df_final.rename(columns=display_columns)
                     output_df.to_excel(f"расхождения_{selected_store}_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx", index=False)
                     st.success("Файл экспортирован!")
