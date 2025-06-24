@@ -4,18 +4,16 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
+import io
 
 # --- Конфигурация страницы ---
-st.set_page_config(page_title="План/Факт Анализ v7.1-Final", page_icon="🏆", layout="wide")
+st.set_page_config(page_title="План/Факт Анализ v7.2-Final", page_icon="🏆", layout="wide")
 st.title("🏆 Универсальный сервис для План/Факт анализа")
 
 # --- Вспомогательные функции ---
 @st.cache_data
 def analyze_data_quality(df, file_name):
-    """
-    Анализирует качество данных в DataFrame.
-    УЛУЧШЕНИЕ: Проверяет на валидные числа все колонки, а не только числовые.
-    """
+    """Анализирует качество данных в DataFrame."""
     quality_info = []
     for col in df.columns:
         total_rows = len(df)
@@ -51,7 +49,6 @@ def transform_wide_to_flat(_wide_df, id_vars):
     for i in range(len(magazin_cols)):
         current_cols = id_vars + [magazin_cols[i], stuki_cols[i], grn_cols[i]]
         part_df = _wide_df[current_cols].copy()
-
         part_df.rename(columns={
             magazin_cols[i]: 'магазин', stuki_cols[i]: 'Plan_STUKI', grn_cols[i]: 'Plan_GRN'
         }, inplace=True)
@@ -78,8 +75,12 @@ def calculate_metrics(df):
 
 @st.cache_data
 def convert_df_to_excel(df):
-    """Конвертирует DataFrame в Excel для скачивания."""
-    return df.to_excel(index=False, engine='openpyxl')
+    """Конвертирует DataFrame в байты Excel для скачивания."""
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='Report')
+    processed_data = output.getvalue()
+    return processed_data
 
 
 # --- Инициализация Session State ---
@@ -105,7 +106,6 @@ if plan_file and fact_file:
     st.dataframe(pd.concat([plan_quality, fact_quality], ignore_index=True), use_container_width=True)
 
     st.header("2. Настройка и обработка данных")
-
     plan_format = st.radio(
         "Выберите формат файла 'План':",
         ('Плоский (стандартный)', 'Широкий (горизонтальный)'), horizontal=True,
@@ -114,15 +114,13 @@ if plan_file and fact_file:
 
     with st.form("processing_form"):
         st.subheader("Настройка ключей и сопоставление колонок")
-        
         all_plan_columns = plan_df_original.columns.tolist()
         potential_keys = ['ART', 'Describe', 'MOD', 'Brend', 'Segment', 'Price']
         default_keys = [col for col in potential_keys if col in all_plan_columns]
         
         product_keys = st.multiselect(
             "Выберите колонки, уникально описывающие товар (ключи для объединения)",
-            options=all_plan_columns,
-            default=default_keys,
+            options=all_plan_columns, default=default_keys,
             help="Эти колонки будут использованы для объединения данных. 'ART' обязателен."
         )
 
@@ -147,7 +145,7 @@ if plan_file and fact_file:
 
     if submitted:
         try:
-            plan_df_renamed = plan_df_original.rename(columns={'Brend': 'brend'}) # Стандартизация 'Brend'
+            plan_df_renamed = plan_df_original.rename(columns={'Brend': 'brend'})
             if plan_format == 'Широкий (горизонтальный)':
                 if not product_keys:
                     st.error("Для широкого формата необходимо выбрать идентификационные колонки товара.")
@@ -167,7 +165,6 @@ if plan_file and fact_file:
             if 'ART' not in merge_keys:
                 st.error("Колонка 'ART' должна быть выбрана в качестве ключа для объединения.")
                 st.stop()
-            
             st.info(f"Объединение будет произведено по ключам: {', '.join(merge_keys)}")
 
             if remove_duplicates:
@@ -208,13 +205,11 @@ if plan_file and fact_file:
             st.error(f"❌ Ошибка при обработке данных: {e}")
             st.error("Совет: Проверьте, что выбраны правильные ключи и что названия колонок соответствуют ожиданиям.")
 
-
 # --- Секция Аналитики ---
 if st.session_state.processed_df is not None:
     processed_df = st.session_state.processed_df
 
     st.header("3. Быстрый анализ отклонений по магазинам")
-    
     store_summary = processed_df.groupby('магазин').agg(
         Plan_STUKI=('Plan_STUKI', 'sum'), Fact_STUKI=('Fact_STUKI', 'sum'),
         Plan_GRN=('Plan_GRN', 'sum'), Fact_GRN=('Fact_GRN', 'sum')
@@ -233,8 +228,7 @@ if st.session_state.processed_df is not None:
     
     problem_stores_df = store_summary[store_summary['Отклонение_%_шт'].abs() > threshold].copy()
     if not problem_stores_df.empty:
-        problem_stores_df['sort_key'] = problem_stores_df[sort_by].abs()
-        problem_stores_df = problem_stores_df.sort_values(by='sort_key', ascending=False).drop(columns='sort_key')
+        problem_stores_df = problem_stores_df.reindex(problem_stores_df[sort_by].abs().sort_values(ascending=False).index)
     
     st.write(f"**Найдено {len(problem_stores_df)} магазинов с абсолютным отклонением > {threshold}%:**")
     
@@ -247,7 +241,6 @@ if st.session_state.processed_df is not None:
     else:
         st.info("Отлично! Нет магазинов с отклонением больше заданного порога.")
 
-    # --- Детальный анализ ---
     st.sidebar.header("🔍 Детальный анализ")
     all_stores_list = sorted(processed_df['магазин'].dropna().unique())
     problem_stores_list = sorted(problem_stores_df['магазин'].unique()) if not problem_stores_df.empty else []
@@ -275,7 +268,6 @@ if st.session_state.processed_df is not None:
         
         st.markdown("---")
         st.header(f"4. 🏪 Детальный анализ магазина: '{selected_store}'")
-        
         metrics = calculate_metrics(filtered_df)
 
         st.subheader("📊 Ключевые показатели")
@@ -285,7 +277,6 @@ if st.session_state.processed_df is not None:
         col3.metric("План (грн.)", f"{metrics['total_plan_money']:,.0f}")
         col4.metric("Факт (грн.)", f"{metrics['total_fact_money']:,.0f}", delta=f"{metrics['money_deviation']:+,.0f}")
 
-        # --- ВОССТАНОВЛЕННЫЙ БЛОК: Структура сегментов ---
         if 'Segment' in filtered_df.columns and filtered_df['Segment'].nunique() > 1:
             st.subheader("🥧 Структура сегментов (по деньгам)")
             segment_data = filtered_df.groupby('Segment').agg(Plan_GRN=('Plan_GRN', 'sum'), Fact_GRN=('Fact_GRN', 'sum')).reset_index()
@@ -298,7 +289,6 @@ if st.session_state.processed_df is not None:
 
             display_table = segment_data[['Segment', 'Структура План, %', 'Структура Факт, %', 'Отклонение, п.п.']].rename(columns={'Segment': 'Сегмент'})
             display_table = display_table.sort_values(by='Структура План, %', ascending=False)
-
             st.dataframe(display_table, column_config={
                 "Структура План, %": st.column_config.ProgressColumn("Структура План, %", format="%.1f%%", min_value=0, max_value=100),
                 "Структура Факт, %": st.column_config.ProgressColumn("Структура Факт, %", format="%.1f%%", min_value=0, max_value=100),
@@ -334,18 +324,18 @@ if st.session_state.processed_df is not None:
             display_columns_map = {'ART': 'Артикул', 'Describe': 'Описание', 'MOD': 'Модель', 'brend': 'Бренд', 'Segment': 'Сегмент', 'Price': 'Цена', 'Plan_STUKI': 'План, шт', 'Fact_STUKI': 'Факт, шт', 'Отклонение_шт': 'Откл, шт', 'Отклонение_%_шт': 'Откл, %', 'Plan_GRN': 'План, грн', 'Fact_GRN': 'Факт, грн', 'Отклонение_грн': 'Откл, грн'}
             columns_to_show = [col for col in display_columns_map.keys() if col in table_df.columns]
             
-            st.dataframe(table_df[columns_to_show].rename(columns=display_columns_map), use_container_width=True, height=400)
+            display_df_discr = table_df[columns_to_show].rename(columns=display_columns_map)
+            st.dataframe(display_df_discr, use_container_width=True, height=400)
             
-            excel_data_discr = convert_df_to_excel(table_df[columns_to_show].rename(columns=display_columns_map))
-            st.download_button(label="📥 Экспорт таблицы расхождений в Excel", data=excel_data_discr, file_name=f"расхождения_{selected_store}_{datetime.now().strftime('%Y%m%d')}.xlsx', mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            excel_data_discr = convert_df_to_excel(display_df_discr)
+            # --- ИСПРАВЛЕННАЯ СТРОКА ---
+            st.download_button(label="📥 Экспорт таблицы расхождений в Excel", data=excel_data_discr, file_name=f"расхождения_{selected_store}_{datetime.now().strftime('%Y%m%d')}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         else:
             st.success("🎉 Поздравляем! В данном магазине (с учетом фильтров) расхождений не обнаружено.")
 
-    # --- ДОБАВЛЕННЫЙ БЛОК: Экспорт всех данных ---
     st.markdown("---")
     st.header("5. Экспорт полных данных")
     st.write("Вы можете скачать полный объединенный набор данных для дальнейшего анализа в других инструментах.")
-    
     excel_data_full = convert_df_to_excel(processed_df)
     st.download_button(
         label="📥 Экспорт всех обработанных данных в Excel",
