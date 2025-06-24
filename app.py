@@ -95,12 +95,16 @@ if plan_file and fact_file:
             
             plan_df = None
             if plan_format == 'Широкий (горизонтальный)':
-                if not id_vars: st.error("Для широкого формата необходимо выбрать идентификационные колонки."); st.stop()
+                if not id_vars: 
+                    st.error("Для широкого формата необходимо выбрать идентификационные колонки.")
+                    st.stop()
                 plan_df = transform_wide_to_flat(plan_df_original, id_vars)
             else: # Плоский
                 plan_df = plan_df_original.rename(columns={'Magazin': 'магазин', 'Brend': 'brand', 'Segment': 'Segment'})
                 
-            if plan_df is None or plan_df.empty: st.error("Не удалось обработать файл 'План'. Проверьте структуру и выбор колонок."); st.stop()
+            if plan_df is None or plan_df.empty: 
+                st.error("Не удалось обработать файл 'План'. Проверьте структуру и выбор колонок.")
+                st.stop()
             st.session_state.plan_df_flat = plan_df
             
             fact_rename_map = {v: k for k, v in fact_mappings.items()}
@@ -112,15 +116,29 @@ if plan_file and fact_file:
                     plan_df[key] = plan_df[key].astype(str)
                     fact_df[key] = fact_df[key].astype(str)
             
-            fact_cols_to_merge = [key for key in merge_keys if key in fact_df.columns] + ['Fact_STUKI']
-            merged_df = pd.merge(plan_df, fact_df[fact_cols_to_merge], on=merge_keys, how='outer')
+            # ИСПРАВЛЕНИЕ 1: Проверяем наличие ключей перед мержем
+            available_keys = [key for key in merge_keys if key in plan_df.columns and key in fact_df.columns]
+            if not available_keys:
+                st.error("Нет общих ключей для объединения данных. Проверьте соответствие колонок.")
+                st.stop()
+            
+            fact_cols_to_merge = available_keys + ['Fact_STUKI']
+            merged_df = pd.merge(plan_df, fact_df[fact_cols_to_merge], on=available_keys, how='outer')
 
+            # ИСПРАВЛЕНИЕ 2: Заполняем NaN ПЕРЕД преобразованием в numeric
             columns_to_fill = ['Plan_STUKI', 'Fact_STUKI', 'Plan_GRN', 'Price']
             for col in columns_to_fill:
-                 if col in merged_df.columns:
+                if col in merged_df.columns:
+                    # Сначала заполняем NaN нулями, потом преобразуем в numeric
+                    merged_df[col] = merged_df[col].fillna(0)
                     merged_df[col] = pd.to_numeric(merged_df[col], errors='coerce').fillna(0)
             
-            merged_df['Fact_GRN'] = merged_df['Fact_STUKI'] * merged_df['Price']
+            # ИСПРАВЛЕНИЕ 3: Пересчитываем Fact_GRN только если есть валидные данные
+            if 'Price' in merged_df.columns and 'Fact_STUKI' in merged_df.columns:
+                merged_df['Fact_GRN'] = merged_df['Fact_STUKI'] * merged_df['Price']
+            else:
+                merged_df['Fact_GRN'] = 0
+                
             st.session_state.processed_df = merged_df
             st.success("Данные успешно обработаны!")
 
@@ -141,26 +159,83 @@ if st.session_state.processed_df is not None:
     st.header("Анализ отклонений")
     st.subheader("Сводная таблица по магазинам")
     
-    store_summary = processed_df.groupby('магазин').agg(
-        Plan_STUKI=('Plan_STUKI', 'sum'), Fact_STUKI=('Fact_STUKI', 'sum'),
-        Plan_GRN=('Plan_GRN', 'sum'), Fact_GRN=('Fact_GRN', 'sum')
-    ).reset_index()
+    # ИСПРАВЛЕНИЕ 4: Проверяем наличие колонок перед группировкой
+    required_cols = ['магазин', 'Plan_STUKI', 'Fact_STUKI', 'Plan_GRN']
+    missing_cols = [col for col in required_cols if col not in processed_df.columns]
     
-    if store_summary['Plan_STUKI'].sum() == 0 and store_summary['Plan_GRN'].sum() == 0:
-        st.warning("Внимание: Суммы по плану равны нулю. Это подтверждает, что плановые данные не были корректно считаны. Пожалуйста, проверьте отладочную таблицу выше.")
-
+    if missing_cols:
+        st.error(f"Отсутствуют необходимые колонки: {missing_cols}")
+        st.stop()
+    
+    # ИСПРАВЛЕНИЕ 5: Добавляем отладочную информацию перед группировкой
+    with st.expander("🔍 Показать объединенные данные (для отладки)"):
+        st.write("Первые 10 строк объединенной таблицы:")
+        st.dataframe(processed_df.head(10))
+        st.write("Сводка по числовым колонкам:")
+        numeric_cols = ['Plan_STUKI', 'Fact_STUKI', 'Plan_GRN', 'Fact_GRN']
+        available_numeric = [col for col in numeric_cols if col in processed_df.columns]
+        if available_numeric:
+            st.dataframe(processed_df[available_numeric].describe())
+    
+    # Группировка с проверкой на наличие данных
+    groupby_cols = {'Plan_STUKI': 'sum', 'Fact_STUKI': 'sum'}
+    if 'Plan_GRN' in processed_df.columns:
+        groupby_cols['Plan_GRN'] = 'sum'
+    if 'Fact_GRN' in processed_df.columns:
+        groupby_cols['Fact_GRN'] = 'sum'
+    
+    store_summary = processed_df.groupby('магазин').agg(groupby_cols).reset_index()
+    
+    # ИСПРАВЛЕНИЕ 6: Улучшенная диагностика проблем с данными
+    plan_stuki_sum = store_summary['Plan_STUKI'].sum() if 'Plan_STUKI' in store_summary.columns else 0
+    plan_grn_sum = store_summary['Plan_GRN'].sum() if 'Plan_GRN' in store_summary.columns else 0
+    
+    if plan_stuki_sum == 0 and plan_grn_sum == 0:
+        st.warning("⚠️ Внимание: Суммы по плану равны нулю!")
+        st.info("Возможные причины:\n- Некорректное сопоставление колонок\n- Проблемы с форматом данных в исходном файле\n- Неправильный выбор идентификационных колонок для широкого формата")
+    
+    # Расчет отклонений
     store_summary['Отклонение_шт'] = store_summary['Fact_STUKI'] - store_summary['Plan_STUKI']
-    store_summary['Отклонение_%_шт'] = np.where(store_summary['Plan_STUKI'] > 0, abs(store_summary['Отклонение_шт']) / store_summary['Plan_STUKI'] * 100, np.where(store_summary['Отклонение_шт'] != 0, np.inf, 0))
+    store_summary['Отклонение_%_шт'] = np.where(
+        store_summary['Plan_STUKI'] > 0, 
+        abs(store_summary['Отклонение_шт']) / store_summary['Plan_STUKI'] * 100, 
+        np.where(store_summary['Отклонение_шт'] != 0, np.inf, 0)
+    )
+    
+    # Добавляем отклонения по сумме, если есть данные
+    if 'Plan_GRN' in store_summary.columns and 'Fact_GRN' in store_summary.columns:
+        store_summary['Отклонение_сумма'] = store_summary['Fact_GRN'] - store_summary['Plan_GRN']
+        store_summary['Отклонение_%_сумма'] = np.where(
+            store_summary['Plan_GRN'] > 0, 
+            abs(store_summary['Отклонение_сумма']) / store_summary['Plan_GRN'] * 100, 
+            np.where(store_summary['Отклонение_сумма'] != 0, np.inf, 0)
+        )
+    
     threshold = st.number_input("Порог отклонения в штуках (%)", value=10, key="threshold_main")
     problem_stores_df = store_summary[store_summary['Отклонение_%_шт'] > threshold].sort_values('Отклонение_%_шт', ascending=False)
     
     st.write(f"**Найдено {len(problem_stores_df)} магазинов с отклонением > {threshold}%:**")
     st.dataframe(problem_stores_df, use_container_width=True)
 
-    # ... (Остальной код анализа, включая детализацию по сегментам и сайдбар) ...
+    # Дополнительная аналитика
     if not problem_stores_df.empty:
-        # ... (код для expander с детализацией по сегментам)
-        pass # Заглушка, чтобы не удлинять код
-
-    # ... (код для сайдбара с детальным анализом)
-    pass # Заглушка, чтобы не удлинять код
+        with st.expander("📊 Детализация по сегментам"):
+            if 'Segment' in processed_df.columns:
+                segment_analysis = processed_df.groupby(['магазин', 'Segment']).agg(groupby_cols).reset_index()
+                st.dataframe(segment_analysis)
+            else:
+                st.info("Колонка 'Segment' не найдена в данных")
+    
+    # Сайдбар с дополнительной информацией
+    with st.sidebar:
+        st.header("📈 Общая статистика")
+        st.metric("Всего магазинов", len(store_summary))
+        st.metric("Проблемных магазинов", len(problem_stores_df))
+        
+        if plan_stuki_sum > 0:
+            st.metric("Общий план (шт.)", f"{plan_stuki_sum:,.0f}")
+            st.metric("Общий факт (шт.)", f"{store_summary['Fact_STUKI'].sum():,.0f}")
+        
+        if plan_grn_sum > 0:
+            st.metric("Общий план (сумма)", f"{plan_grn_sum:,.0f}")
+            st.metric("Общий факт (сумма)", f"{store_summary['Fact_GRN'].sum():,.0f}")
