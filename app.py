@@ -4,7 +4,6 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
-import plotly.graph_objects as go
 from datetime import datetime
 from io import BytesIO
 import warnings
@@ -14,8 +13,8 @@ warnings.filterwarnings('ignore')
 
 # --- 1. Настройка страницы ---
 st.set_page_config(
-    page_title="План/Факт Анализ v8.4 (Исправлено)",
-    page_icon="🔧",
+    page_title="План/Факт Анализ v8.5 (Fix)",
+    page_icon="🛠️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -29,7 +28,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- 3. Заголовок и инструкции ---
-st.title("🔧 Универсальный сервис для План/Факт анализа v8.4")
+st.title("🛠️ Универсальный сервис для План/Факт анализа v8.5")
 st.info(
     "**Инструкция:** 1️⃣ Загрузите файлы → 2️⃣ Настройте сопоставление полей → 3️⃣ Запустите анализ"
 )
@@ -38,7 +37,6 @@ st.info(
 
 @st.cache_data
 def load_excel_file(file):
-    """Загружает Excel файл с обработкой ошибок."""
     try:
         return pd.read_excel(file)
     except Exception as e:
@@ -47,7 +45,6 @@ def load_excel_file(file):
 
 @st.cache_data
 def clean_and_prepare_data(df, column_mappings):
-    """Очищает и подготавливает данные для плоского формата."""
     if df is None or not column_mappings: return None
     try:
         rename_map = {v: k for k, v in column_mappings.items() if v and v in df.columns}
@@ -62,11 +59,9 @@ def clean_and_prepare_data(df, column_mappings):
                 cleaned_df[col] = pd.to_numeric(cleaned_df[col], errors='coerce').fillna(0)
         
         if 'магазин' in cleaned_df.columns:
-            cleaned_df.dropna(subset=['магазин'], inplace=True)
-            cleaned_df = cleaned_df[cleaned_df['магазин'] != '']
+            cleaned_df = cleaned_df.dropna(subset=['магазин'])[cleaned_df['магазин'] != '']
         if 'ART' in cleaned_df.columns:
-            cleaned_df.dropna(subset=['ART'], inplace=True)
-            cleaned_df = cleaned_df[cleaned_df['ART'] != '']
+            cleaned_df = cleaned_df.dropna(subset=['ART'])[cleaned_df['ART'] != '']
 
         return cleaned_df
     except Exception as e:
@@ -75,7 +70,6 @@ def clean_and_prepare_data(df, column_mappings):
 
 @st.cache_data
 def transform_wide_to_flat(wide_df, id_vars):
-    """Преобразует широкий DataFrame плана в плоский."""
     if wide_df is None or not id_vars: return None
     try:
         plan_data_cols = [col for col in wide_df.columns if col not in id_vars]
@@ -105,7 +99,6 @@ def transform_wide_to_flat(wide_df, id_vars):
         return None
 
 def calculate_advanced_metrics(df):
-    """Расчет расширенных метрик для анализа."""
     if df is None or df.empty: return {}
     metrics = {
         'total_plan_qty': df['Plan_STUKI'].sum(), 'total_fact_qty': df['Fact_STUKI'].sum(),
@@ -121,7 +114,6 @@ def calculate_advanced_metrics(df):
     return metrics
 
 def convert_df_to_excel(df):
-    """Конвертирует DataFrame в Excel файл для скачивания с автоподбором ширины колонок."""
     try:
         buffer = BytesIO()
         with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
@@ -165,8 +157,7 @@ if plan_file and fact_file:
     temp_fact_df = fact_df_original.dropna(how='all') if initial_fact_rows > 0 else pd.DataFrame()
     
     status_data = {
-        "Файл": ["План", "Факт"],
-        "Всего строк в файле": [initial_plan_rows, initial_fact_rows],
+        "Файл": ["План", "Факт"], "Всего строк в файле": [initial_plan_rows, initial_fact_rows],
         "Строк с данными (непустых)": [len(temp_plan_df), len(temp_fact_df)],
         "Пустых или некорректных строк": [initial_plan_rows - len(temp_plan_df), initial_fact_rows - len(temp_fact_df)]
     }
@@ -184,7 +175,7 @@ if plan_file and fact_file:
             with col_map1:
                 st.markdown("**📋 Поля из файла 'План'**")
                 if plan_format == 'Широкий (горизонтальный)':
-                    id_vars = st.multiselect("Выберите идентификационные поля товара", options=plan_df_original.columns.tolist(), default=[c for c in ['ART', 'Describe', 'MOD', 'Price', 'brend', 'Segment'] if c in plan_df_original.columns], help="Поля, которые описывают товар (НЕ магазины, НЕ штуки, НЕ суммы)")
+                    id_vars = st.multiselect("Выберите идентификационные поля товара", options=plan_df_original.columns.tolist(), default=[c for c in ['ART', 'Describe', 'MOD', 'Price', 'brend', 'Segment'] if c in plan_df_original.columns])
                     plan_mappings = {}
                 else:
                     id_vars = []
@@ -224,8 +215,7 @@ if plan_file and fact_file:
                     merged_df = pd.merge(plan_df[plan_cols_to_merge], fact_df[fact_cols_to_merge], on=merge_keys, how='outer')
 
                     for col in ['Plan_STUKI', 'Fact_STUKI', 'Plan_GRN', 'Price']:
-                        if col in merged_df.columns:
-                            merged_df[col] = merged_df[col].fillna(0)
+                        if col in merged_df.columns: merged_df[col] = merged_df[col].fillna(0)
                     
                     merged_df['Fact_GRN'] = (merged_df['Fact_STUKI'] * merged_df['Price']).fillna(0)
                     merged_df['Отклонение_шт'] = merged_df['Fact_STUKI'] - merged_df['Plan_STUKI']
@@ -268,7 +258,6 @@ if st.session_state.processed_df is not None:
     selected_store_for_segment = st.selectbox("Выберите магазин для анализа по сегментам:", all_stores_list, key="segment_store_selector")
 
     if selected_store_for_segment and 'Segment' in processed_df.columns:
-        # ИСПРАВЛЕННАЯ ЛОГИКА
         full_segment_summary = processed_df.groupby(['магазин', 'Segment']).agg(
             Plan_STUKI=('Plan_STUKI', 'sum'), Fact_STUKI=('Fact_STUKI', 'sum'),
             Plan_GRN=('Plan_GRN', 'sum'), Fact_GRN=('Fact_GRN', 'sum')
@@ -281,9 +270,15 @@ if st.session_state.processed_df is not None:
             segment_summary['Отклонение_грн'] = segment_summary['Fact_GRN'] - segment_summary['Plan_GRN']
             segment_summary['Выполнение_плана_%'] = np.where(segment_summary['Plan_STUKI'] > 0, (segment_summary['Fact_STUKI'] / segment_summary['Plan_STUKI']) * 100, np.where(segment_summary['Fact_STUKI'] > 0, 999, 0))
             
+            # --- ИСПРАВЛЕНИЕ ЗДЕСЬ ---
+            # Заменяем строгий формат integer ('d') на более гибкий float с 0 знаков после запятой ('f').
             st.dataframe(segment_summary.drop(columns=['магазин']).style.format({
-                'Plan_STUKI': '{:,.0f}', 'Fact_STUKI': '{:,.0f}', 'Отклонение_шт': '{:+,_d}',
-                'Plan_GRN': '{:,.0f}', 'Fact_GRN': '{:,.0f}', 'Отклонение_грн': '{:+,_d}',
+                'Plan_STUKI': '{:,.0f}',
+                'Fact_STUKI': '{:,.0f}',
+                'Отклонение_шт': '{:+, .0f}',
+                'Plan_GRN': '{:,.0f}',
+                'Fact_GRN': '{:,.0f}',
+                'Отклонение_грн': '{:+, .0f}',
                 'Выполнение_плана_%': '{:.1f}%'
             }), use_container_width=True)
         else:
