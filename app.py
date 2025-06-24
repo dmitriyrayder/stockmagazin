@@ -5,7 +5,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
 
-st.set_page_config(page_title="План/Факт Анализ v6.3", page_icon="🏆", layout="wide")
+st.set_page_config(page_title="План/Факт Анализ v6.4", page_icon="🏆", layout="wide")
 st.title("🏆 Универсальный сервис для План/Факт анализа")
 
 # --- Вспомогательные функции ---
@@ -102,7 +102,7 @@ with col1:
         if g_sheet_url:
             try:
                 # Преобразуем URL для прямого скачивания CSV
-                csv_url = g_sheet_url.replace("/edit?usp=sharing", "/export?format=csv")
+                csv_url = g_sheet_url.replace("/edit?usp=sharing", "/export?format=csv").replace("/edit", "/export?format=csv")
                 plan_df_original = pd.read_csv(csv_url)
                 st.info(f"✅ Таблица успешно загружена. Найдено {len(plan_df_original)} строк.")
             except Exception as e:
@@ -118,9 +118,7 @@ with col2:
 
 # --- Анализ качества данных ---
 if plan_df_original is not None and fact_df_original is not None:
-    
     st.header("1.1. Анализ качества загруженных данных")
-    
     plan_quality = analyze_data_quality(plan_df_original, "План")
     fact_quality = analyze_data_quality(fact_df_original, "Факт")
     quality_df = pd.concat([plan_quality, fact_quality], ignore_index=True)
@@ -145,25 +143,47 @@ if plan_df_original is not None and fact_df_original is not None:
     )
 
     with st.form("processing_form"):
+        plan_mappings = {}
         id_vars = []
+        
+        plan_cols = plan_df_original.columns.tolist()
+        fact_cols = fact_df_original.columns.tolist()
+
         if plan_format == 'Широкий (горизонтальный)':
             st.subheader("Настройка для широкого формата 'План'")
-            all_plan_columns = plan_df_original.columns.tolist()
             id_vars = st.multiselect(
                 "Выберите все колонки, описывающие товар (НЕ относящиеся к магазинам)",
-                options=all_plan_columns,
-                default=[col for col in ['ART', 'Describe', 'MOD', 'Price', 'Brend', 'Segment'] if col in all_plan_columns]
+                options=plan_cols,
+                default=[col for col in ['ART', 'Describe', 'MOD', 'Price', 'Brend', 'Segment'] if col in plan_cols]
             )
+        else: # Плоский формат
+            st.subheader("Сопоставление для данных 'План' (плоский формат)")
+            PLAN_REQUIRED_FIELDS = {
+                'магазин': 'Магазин', 'ART': 'Артикул', 'Describe': 'Описание', 'MOD': 'Модель',
+                'Segment': 'Сегмент', 'brend': 'Бренд', 'Price': 'Цена',
+                'Plan_STUKI': 'Плановые остатки (шт.)', 'Plan_GRN': 'Плановые остатки (грн.)'
+            }
+            for internal, display in PLAN_REQUIRED_FIELDS.items():
+                default_selection = [c for c in plan_cols if c.lower() == internal.lower() or c.lower() == display.lower()]
+                default_index = plan_cols.index(default_selection[0]) if default_selection else 0
+                
+                plan_mappings[internal] = st.selectbox(
+                    f'"{display}"', plan_cols, key=f'plan_{internal}', index=default_index
+                )
 
         st.subheader("Сопоставление для файла 'Факт'")
         fact_mappings = {}
-        fact_cols = fact_df_original.columns.tolist()
         FACT_REQUIRED_FIELDS = {
             'магазин': 'Магазин', 'ART': 'Артикул', 'Describe': 'Описание', 'MOD': 'Модель',
             'brend': 'Бренд', 'Fact_STUKI': 'Фактические остатки (шт.)'
         }
         for internal, display in FACT_REQUIRED_FIELDS.items():
-            fact_mappings[internal] = st.selectbox(f'"{display}"', fact_cols, key=f'fact_{internal}')
+            default_selection = [c for c in fact_cols if c.lower() == internal.lower() or c.lower() == display.lower()]
+            default_index = fact_cols.index(default_selection[0]) if default_selection else 0
+            
+            fact_mappings[internal] = st.selectbox(
+                f'"{display}"', fact_cols, key=f'fact_{internal}', index=default_index
+            )
         
         col1, col2 = st.columns(2)
         with col1:
@@ -181,8 +201,9 @@ if plan_df_original is not None and fact_df_original is not None:
                     st.error("Для широкого формата необходимо выбрать идентификационные колонки.")
                     st.stop()
                 plan_df = transform_wide_to_flat(plan_df_original.copy(), id_vars)
-            else:
-                plan_df = plan_df_original.copy().rename(columns={'Magazin': 'магазин'})
+            else: # Плоский формат
+                plan_rename_map = {v: k for k, v in plan_mappings.items()}
+                plan_df = plan_df_original[list(plan_rename_map.keys())].rename(columns=plan_rename_map)
                 
             if plan_df is None:
                 st.error("Не удалось обработать данные 'План'.")
@@ -195,8 +216,12 @@ if plan_df_original is not None and fact_df_original is not None:
             # Удаление дубликатов
             merge_keys = ['магазин', 'ART', 'Describe', 'MOD']
             if remove_duplicates:
-                plan_df = plan_df.drop_duplicates(subset=merge_keys)
-                fact_df = fact_df.drop_duplicates(subset=merge_keys)
+                plan_keys_exist = all(key in plan_df.columns for key in merge_keys)
+                fact_keys_exist = all(key in fact_df.columns for key in merge_keys)
+                if plan_keys_exist:
+                    plan_df = plan_df.drop_duplicates(subset=merge_keys)
+                if fact_keys_exist:
+                    fact_df = fact_df.drop_duplicates(subset=merge_keys)
             
             # Приведение типов для слияния
             for key in merge_keys:
@@ -205,7 +230,7 @@ if plan_df_original is not None and fact_df_original is not None:
                     fact_df[key] = fact_df[key].astype(str)
 
             # Слияние данных
-            fact_cols_to_merge = merge_keys + ['Fact_STUKI']
+            fact_cols_to_merge = [key for key in merge_keys + ['Fact_STUKI'] if key in fact_df.columns]
             merged_df = pd.merge(plan_df, fact_df[fact_cols_to_merge], on=merge_keys, how='outer')
 
             # Обработка числовых колонок
@@ -217,7 +242,7 @@ if plan_df_original is not None and fact_df_original is not None:
                         merged_df[col] = merged_df[col].fillna(0)
             
             # Расчеты
-            merged_df['Fact_GRN'] = merged_df['Fact_STUKI'] * merged_df['Price']
+            merged_df['Fact_GRN'] = merged_df['Fact_STUKI'] * merged_df.get('Price', 0)
             merged_df['Отклонение_шт'] = merged_df['Fact_STUKI'] - merged_df['Plan_STUKI']
             merged_df['Отклонение_грн'] = merged_df['Fact_GRN'] - merged_df['Plan_GRN']
             merged_df['Отклонение_%_шт'] = np.where(
@@ -242,6 +267,9 @@ if plan_df_original is not None and fact_df_original is not None:
             with col3:
                 st.metric("Записей после объединения", len(merged_df))
 
+        except KeyError as e:
+            st.session_state.processed_df = None
+            st.error(f"❌ Ошибка: колонка не найдена - {e}. Проверьте правильность сопоставления колонок на шаге 2.")
         except Exception as e:
             st.session_state.processed_df = None
             st.error(f"❌ Ошибка при обработке данных: {e}")
@@ -249,7 +277,6 @@ if plan_df_original is not None and fact_df_original is not None:
 # --- Аналитика ---
 if st.session_state.processed_df is not None:
     processed_df = st.session_state.processed_df
-    # ... Остальной код остается без изменений ...
 
     st.header("3. Быстрый анализ отклонений по магазинам и сегментам")
     
@@ -408,10 +435,35 @@ if st.session_state.processed_df is not None:
                     use_container_width=True,
                     hide_index=True
                 )
-
+            
             if selected_segment != 'Все':
                 st.subheader(f"⚡ Спидометры для сегмента: '{selected_segment}'")
-                # ... Спидометры остаются без изменений ...
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    gauge_max_qty = max(metrics['total_plan_qty'], metrics['total_fact_qty']) * 1.2
+                    fig_gauge_qty = go.Figure(go.Indicator(
+                        mode="gauge+number+delta", value=metrics['total_fact_qty'],
+                        title={'text': "<b>Выполнение в штуках</b>"}, delta={'reference': metrics['total_plan_qty']},
+                        gauge={'axis': {'range': [0, gauge_max_qty]}, 'bar': {'color': "#1f77b4"},
+                               'steps': [{'range': [0, metrics['total_plan_qty'] * 0.8], 'color': "lightgray"},
+                                        {'range': [metrics['total_plan_qty'] * 0.8, metrics['total_plan_qty'] * 1.2], 'color': "gray"}],
+                               'threshold': {'line': {'color': "red", 'width': 4}, 'thickness': 0.75, 'value': metrics['total_plan_qty']}}
+                    ))
+                    st.plotly_chart(fig_gauge_qty, use_container_width=True)
+                
+                with col2:
+                    gauge_max_money = max(metrics['total_plan_money'], metrics['total_fact_money']) * 1.2
+                    fig_gauge_money = go.Figure(go.Indicator(
+                        mode="gauge+number+delta", value=metrics['total_fact_money'],
+                        title={'text': "<b>Выполнение в деньгах</b>"}, number={'suffix': " грн."},
+                        delta={'reference': metrics['total_plan_money']},
+                        gauge={'axis': {'range': [0, gauge_max_money]}, 'bar': {'color': "#1f77b4"},
+                               'steps': [{'range': [0, metrics['total_plan_money'] * 0.8], 'color': "lightgray"},
+                                        {'range': [metrics['total_plan_money'] * 0.8, metrics['total_plan_money'] * 1.2], 'color': "gray"}],
+                               'threshold': {'line': {'color': "red", 'width': 4}, 'thickness': 0.75, 'value': metrics['total_plan_money']}}
+                    ))
+                    st.plotly_chart(fig_gauge_money, use_container_width=True)
 
             st.subheader("⚠️ Анализ расхождений по позициям")
             discrepancy_df = filtered_df[(filtered_df['Отклонение_шт'] != 0) | (filtered_df['Отклонение_грн'] != 0)].copy()
