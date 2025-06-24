@@ -7,11 +7,47 @@ from datetime import datetime
 import io
 
 # --- Конфигурация страницы ---
-st.set_page_config(page_title="План/Факт Анализ v10.0-Focused", page_icon="🏆", layout="wide")
-st.title("🏆 Сервис для План/Факт анализа")
-st.info("Эта версия настроена для простого объединения: вся информация о товаре (Цена, Бренд и т.д.) берется из файла **'План'**, а из файла **'Факт'** - только количество. Ключ для объединения: **Магазин + Описание + Модель**.")
+st.set_page_config(page_title="План/Факт Анализ v11.0-Hybrid", page_icon="🏆", layout="wide")
+st.title("🏆 Универсальный сервис для План/Факт анализа")
+st.info("Эта версия поддерживает **горизонтальный (широкий)** и плоский формат файла 'План'. Ключ для объединения: **Магазин + Описание + Модель**.")
 
-# --- Вспомогательные функции (без изменений) ---
+# --- Вспомогательные функции ---
+@st.cache_data
+def transform_wide_to_flat(_wide_df, id_vars):
+    """Преобразует широкий DataFrame плана в плоский."""
+    plan_data_cols = [col for col in _wide_df.columns if col not in id_vars]
+    magazin_cols = sorted([col for col in plan_data_cols if str(col).startswith('Magazin')])
+    stuki_cols = sorted([col for col in plan_data_cols if str(col).startswith('Plan_STUKI')])
+    grn_cols = sorted([col for col in plan_data_cols if str(col).startswith('Plan_GRN')])
+
+    if not (len(magazin_cols) == len(stuki_cols) and len(magazin_cols) > 0):
+        st.error("Ошибка структуры файла Плана: Количество колонок с префиксами 'Magazin' и 'Plan_STUKI' не совпадает или равно нулю.")
+        return None
+    
+    # Колонка Plan_GRN опциональна
+    has_grn = len(magazin_cols) == len(grn_cols)
+
+    flat_parts = []
+    for i in range(len(magazin_cols)):
+        # Собираем текущие колонки
+        current_cols = id_vars + [magazin_cols[i], stuki_cols[i]]
+        if has_grn:
+            current_cols.append(grn_cols[i])
+            
+        part_df = _wide_df[current_cols].copy()
+        
+        # Переименовываем
+        rename_dict = {magazin_cols[i]: 'магазин', stuki_cols[i]: 'Plan_STUKI'}
+        if has_grn:
+            rename_dict[grn_cols[i]] = 'Plan_GRN'
+        
+        part_df.rename(columns=rename_dict, inplace=True)
+        flat_parts.append(part_df)
+        
+    flat_df = pd.concat(flat_parts, ignore_index=True)
+    flat_df.dropna(subset=['магазин'], inplace=True)
+    return flat_df
+
 @st.cache_data
 def calculate_metrics(df):
     """Рассчитывает основные метрики для данных."""
@@ -42,34 +78,44 @@ with col1:
 with col2:
     fact_file = st.file_uploader("Загрузите файл 'Факт'", type=["xlsx", "xls"])
 
-# --- ПОЛНОСТЬЮ ПЕРЕРАБОТАННЫЙ БЛОК НАСТРОЙКИ ---
 if plan_file and fact_file:
     plan_df_original = pd.read_excel(plan_file, engine='openpyxl')
     fact_df_original = pd.read_excel(fact_file, engine='openpyxl')
 
-    st.header("2. Укажите нужные колонки")
+    st.header("2. Настройка обработки")
     
     with st.form("processing_form"):
-        st.write("Выберите колонки из ваших файлов, которые соответствуют необходимым данным.")
-        
-        # --- Настройка колонок ---
+        plan_format = st.radio(
+            "1. Выберите формат вашего файла 'План':",
+            ('Горизонтальный (широкий)', 'Плоский (обычный)'), horizontal=True
+        )
+
         c1, c2 = st.columns(2)
         with c1:
-            st.subheader("Из файла 'План'")
+            st.subheader("2. Настройка файла 'План'")
             plan_cols = plan_df_original.columns.tolist()
-            plan_map = {
-                'магазин': st.selectbox("Магазин", plan_cols, key='plan_magazin'),
-                'Describe': st.selectbox("Описание", plan_cols, key='plan_describe'),
-                'MOD': st.selectbox("Модель", plan_cols, key='plan_mod'),
-                'Plan_STUKI': st.selectbox("План (шт.)", plan_cols, key='plan_stuki'),
-                'ART': st.selectbox("Артикул (опционально)", [None] + plan_cols, key='plan_art'),
-                'brend': st.selectbox("Бренд (опционально)", [None] + plan_cols, key='plan_brend'),
-                'Segment': st.selectbox("Сегмент (опционально)", [None] + plan_cols, key='plan_segment'),
-                'Price': st.selectbox("Цена (опционально)", [None] + plan_cols, key='plan_price'),
-                'Plan_GRN': st.selectbox("План (грн.) (опционально)", [None] + plan_cols, key='plan_grn'),
-            }
+            if plan_format == 'Горизонтальный (широкий)':
+                id_vars = st.multiselect(
+                    "Выберите все колонки, описывающие товар (НЕ относящиеся к магазинам)",
+                    options=plan_cols,
+                    default=[col for col in ['ART', 'Describe', 'MOD', 'Price', 'Brend', 'Segment'] if col in plan_cols],
+                    help="Это колонки, которые не повторяются для каждого магазина."
+                )
+            else: # Плоский формат
+                plan_map_flat = {
+                    'магазин': st.selectbox("Магазин", plan_cols, key='plan_magazin'),
+                    'Describe': st.selectbox("Описание", plan_cols, key='plan_describe'),
+                    'MOD': st.selectbox("Модель", plan_cols, key='plan_mod'),
+                    'Plan_STUKI': st.selectbox("План (шт.)", plan_cols, key='plan_stuki'),
+                    # Опциональные поля из Плана
+                    'ART': st.selectbox("Артикул (опционально)", [None] + plan_cols, key='plan_art'),
+                    'brend': st.selectbox("Бренд (опционально)", [None] + plan_cols, key='plan_brend'),
+                    'Segment': st.selectbox("Сегмент (опционально)", [None] + plan_cols, key='plan_segment'),
+                    'Price': st.selectbox("Цена (опционально)", [None] + plan_cols, key='plan_price'),
+                    'Plan_GRN': st.selectbox("План (грн.) (опционально)", [None] + plan_cols, key='plan_grn'),
+                }
         with c2:
-            st.subheader("Из файла 'Факт'")
+            st.subheader("3. Настройка файла 'Факт'")
             fact_cols = fact_df_original.columns.tolist()
             fact_map = {
                 'магазин': st.selectbox("Магазин", fact_cols, key='fact_magazin'),
@@ -82,23 +128,30 @@ if plan_file and fact_file:
 
     if submitted:
         try:
-            # --- Обработка данных по упрощенной логике ---
+            # --- Обработка ---
             merge_keys = ['магазин', 'Describe', 'MOD']
 
-            # 1. Готовим файл ПЛАН (главный)
-            plan_rename_map = {v: k for k, v in plan_map.items() if v is not None}
-            plan_df = plan_df_original[list(plan_rename_map.keys())].rename(columns=plan_rename_map)
-            
-            # 2. Готовим файл ФАКТ (только ключи и количество)
+            # 1. Готовим файл ПЛАН в зависимости от формата
+            if plan_format == 'Горизонтальный (широкий)':
+                if not id_vars:
+                    st.error("Для горизонтального формата необходимо выбрать описательные колонки товара.")
+                    st.stop()
+                plan_df = transform_wide_to_flat(plan_df_original, id_vars)
+                if plan_df is None: st.stop() # Ошибка уже показана в функции
+            else: # Плоский формат
+                plan_rename_map = {v: k for k, v in plan_map_flat.items() if v is not None}
+                plan_df = plan_df_original[list(plan_rename_map.keys())].rename(columns=plan_rename_map)
+
+            # 2. Готовим файл ФАКТ
             fact_rename_map = {v: k for k, v in fact_map.items() if v is not None}
             fact_df = fact_df_original[list(fact_rename_map.keys())].rename(columns=fact_rename_map)
 
-            # 3. Приведение типов ключей к строке для надежного слияния
+            # 3. Приведение типов ключей
             for key in merge_keys:
                 if key in plan_df.columns: plan_df[key] = plan_df[key].astype(str).str.strip()
                 if key in fact_df.columns: fact_df[key] = fact_df[key].astype(str).str.strip()
 
-            # 4. Объединение: `left` join, чтобы сохранить все из плана и добавить факт
+            # 4. Объединение таблиц (OUTER JOIN, чтобы видеть все расхождения)
             merged_df = pd.merge(plan_df, fact_df, on=merge_keys, how='outer')
             
             # 5. Обработка и расчеты
@@ -109,8 +162,8 @@ if plan_file and fact_file:
                 else: 
                     merged_df[col] = 0
 
-            if 'Price' not in plan_df.columns:
-                st.warning("Колонка 'Цена' не была указана в файле 'План'. Расчеты в деньгах (GRN) будут основаны только на данных 'План (грн.)', если они есть.")
+            if 'Price' not in merged_df.columns or merged_df['Price'].sum() == 0:
+                st.warning("Колонка 'Цена' не найдена или пуста. Расчеты в деньгах по факту могут быть неверны.")
             
             merged_df['Fact_GRN'] = merged_df['Fact_STUKI'] * merged_df['Price']
             
@@ -126,7 +179,7 @@ if plan_file and fact_file:
         except Exception as e:
             st.session_state.processed_df = None
             st.error(f"❌ Ошибка при обработке данных: {e}")
-            st.error("Совет: Проверьте, что для обязательных полей выбраны правильные колонки. Возможно, вы выбрали одну и ту же колонку для разных полей.")
+            st.error("Совет: Проверьте, что для обязательных полей выбраны правильные колонки.")
 
 # --- Секция Аналитики (остается без изменений) ---
 if st.session_state.processed_df is not None:
@@ -178,7 +231,7 @@ if st.session_state.processed_df is not None:
         store_df = processed_df[processed_df['магазин'] == selected_store].copy()
 
         all_segments = sorted(store_df['Segment'].dropna().unique()) if 'Segment' in store_df.columns else []
-        all_brands = sorted(store_df['brend'].dropna().unique()) if 'brend' in store_df.columns else []
+        all_brands = sorted(store_df.get('brend', pd.Series()).dropna().unique())
         
         selected_segment = st.sidebar.selectbox("Фильтр по сегменту", options=['Все'] + all_segments) if all_segments else 'Все'
         selected_brand = st.sidebar.selectbox("Фильтр по бренду", options=['Все'] + all_brands) if all_brands else 'Все'
