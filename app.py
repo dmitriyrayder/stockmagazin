@@ -14,8 +14,8 @@ warnings.filterwarnings('ignore')
 
 # --- 1. Настройка страницы ---
 st.set_page_config(
-    page_title="План/Факт Анализ v8.3 (Эксперт)",
-    page_icon="🎯",
+    page_title="План/Факт Анализ v8.4 (Исправлено)",
+    page_icon="🔧",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -25,12 +25,11 @@ st.markdown("""
 <style>
     .success-box { background-color: #d4edda; border: 1px solid #c3e6cb; border-radius: 5px; padding: 1rem; margin: 1rem 0; }
     .error-box { background-color: #f8d7da; border: 1px solid #f5c6cb; border-radius: 5px; padding: 1rem; margin: 1rem 0; }
-    .info-box { background-color: #d1ecf1; border: 1px solid #bee5eb; border-radius: 5px; padding: 1rem; margin: 1rem 0; }
 </style>
 """, unsafe_allow_html=True)
 
 # --- 3. Заголовок и инструкции ---
-st.title("🎯 Универсальный сервис для План/Факт анализа v8.3")
+st.title("🔧 Универсальный сервис для План/Факт анализа v8.4")
 st.info(
     "**Инструкция:** 1️⃣ Загрузите файлы → 2️⃣ Настройте сопоставление полей → 3️⃣ Запустите анализ"
 )
@@ -62,7 +61,6 @@ def clean_and_prepare_data(df, column_mappings):
             if col in cleaned_df.columns:
                 cleaned_df[col] = pd.to_numeric(cleaned_df[col], errors='coerce').fillna(0)
         
-        # Удаляем строки, где ключевые идентификаторы пусты
         if 'магазин' in cleaned_df.columns:
             cleaned_df.dropna(subset=['магазин'], inplace=True)
             cleaned_df = cleaned_df[cleaned_df['магазин'] != '']
@@ -77,7 +75,7 @@ def clean_and_prepare_data(df, column_mappings):
 
 @st.cache_data
 def transform_wide_to_flat(wide_df, id_vars):
-    """Преобразует широкий DataFrame плана в плоский с корректной обработкой числовых названий магазинов."""
+    """Преобразует широкий DataFrame плана в плоский."""
     if wide_df is None or not id_vars: return None
     try:
         plan_data_cols = [col for col in wide_df.columns if col not in id_vars]
@@ -87,7 +85,7 @@ def transform_wide_to_flat(wide_df, id_vars):
         grn_cols = sorted([col for col in plan_data_cols if 'grn' in str(col).lower() or 'грн' in str(col).lower() or 'сумм' in str(col).lower()])
         
         if not (magazin_cols and stuki_cols and grn_cols):
-            raise ValueError("Не найдены необходимые колонки для преобразования широкого формата (магазин, штуки, грн). Проверьте названия колонок.")
+            raise ValueError("Не найдены необходимые колонки для преобразования широкого формата (магазин, штуки, грн).")
         
         min_length = min(len(magazin_cols), len(stuki_cols), len(grn_cols))
         
@@ -148,14 +146,12 @@ if 'processed_df' not in st.session_state:
 
 # --- 6. Основной интерфейс приложения ---
 
-# Шаг 1: Загрузка файлов
 st.header("📁 Шаг 1: Загрузка файлов")
 col1, col2 = st.columns(2)
 plan_file = col1.file_uploader("Загрузите файл 'План'", type=["xlsx", "xls"], key="plan_uploader")
 fact_file = col2.file_uploader("Загрузите файл 'Факт'", type=["xlsx", "xls"], key="fact_uploader")
 
 if plan_file and fact_file:
-    # --- НОВЫЙ БЛОК: Статус загрузки и чтения ---
     st.markdown("---")
     st.subheader("Шаг 1.1: Статус загрузки и чтения данных")
     
@@ -165,7 +161,6 @@ if plan_file and fact_file:
     initial_plan_rows = len(plan_df_original) if plan_df_original is not None else 0
     initial_fact_rows = len(fact_df_original) if fact_df_original is not None else 0
     
-    # Предварительная очистка для подсчета "полезных" строк
     temp_plan_df = plan_df_original.dropna(how='all') if initial_plan_rows > 0 else pd.DataFrame()
     temp_fact_df = fact_df_original.dropna(how='all') if initial_fact_rows > 0 else pd.DataFrame()
     
@@ -178,7 +173,6 @@ if plan_file and fact_file:
     st.dataframe(pd.DataFrame(status_data), use_container_width=True)
     st.markdown("---")
     
-    # Шаг 2: Настройка и обработка
     st.header("⚙️ Шаг 2: Настройка и обработка данных")
     if plan_df_original is not None and fact_df_original is not None:
         plan_format = st.radio("Выберите формат файла 'План':", ('Плоский (стандартный)', 'Широкий (горизонтальный)'), horizontal=True)
@@ -225,8 +219,6 @@ if plan_file and fact_file:
                     for key in ['Describe', 'MOD']:
                         if key in plan_df.columns and key in fact_df.columns: merge_keys.append(key)
                     
-                    # --- ИЗМЕНЕНА ЛОГИКА РАСЧЕТА ---
-                    # 1. Готовим данные к объединению, Price ОБЯЗАТЕЛЬНО берем из плана
                     plan_cols_to_merge = [col for col in plan_df.columns if col not in ['Fact_STUKI']]
                     fact_cols_to_merge = [col for col in merge_keys + ['Fact_STUKI'] if col in fact_df.columns]
                     merged_df = pd.merge(plan_df[plan_cols_to_merge], fact_df[fact_cols_to_merge], on=merge_keys, how='outer')
@@ -235,9 +227,7 @@ if plan_file and fact_file:
                         if col in merged_df.columns:
                             merged_df[col] = merged_df[col].fillna(0)
                     
-                    # 2. Fact_GRN рассчитывается на основе Price из Плана
                     merged_df['Fact_GRN'] = (merged_df['Fact_STUKI'] * merged_df['Price']).fillna(0)
-
                     merged_df['Отклонение_шт'] = merged_df['Fact_STUKI'] - merged_df['Plan_STUKI']
                     merged_df['Отклонение_грн'] = merged_df['Fact_GRN'] - merged_df['Plan_GRN']
                     merged_df['Отклонение_%_шт'] = np.where(merged_df['Plan_STUKI'] != 0, (merged_df['Отклонение_шт'] / merged_df['Plan_STUKI']) * 100, np.where(merged_df['Fact_STUKI'] != 0, 999, 0))
@@ -249,7 +239,7 @@ if plan_file and fact_file:
                     st.session_state.processed_df = None
                     st.markdown(f"""<div class="error-box"><h4>❌ Произошла ошибка при обработке</h4><p>{str(e)}</p></div>""", unsafe_allow_html=True)
 
-# --- 7. Блок аналитики (отображается только после успешной обработки) ---
+# --- 7. Блок аналитики ---
 if st.session_state.processed_df is not None:
     processed_df = st.session_state.processed_df
     all_stores_list = sorted(processed_df['магазин'].dropna().unique())
@@ -269,39 +259,38 @@ if st.session_state.processed_df is not None:
     if not problem_stores_df.empty:
         st.success(f"🎯 Найдено {len(problem_stores_df)} магазинов с отклонением > {threshold}%")
         fig = px.bar(problem_stores_df.head(20), x='магазин', y='Отклонение_%_шт_abs', title=f'ТОП-20 магазинов по абсолютному отклонению (> {threshold}%)', color='Отклонение_%_шт_abs', color_continuous_scale='Reds', labels={'магазин': 'Магазин', 'Отклонение_%_шт_abs': 'Абсолютное отклонение, %'})
-        fig.update_layout(xaxis_tickangle=-45)
         st.plotly_chart(fig, use_container_width=True)
     else:
         st.info(f"🎉 Отличная работа! Нет магазинов с отклонением больше {threshold}%")
 
-    # --- НОВЫЙ БЛОК: Анализ по сегментам ---
     st.markdown("---")
     st.header("📈 Шаг 3.1: Анализ по сегментам")
     selected_store_for_segment = st.selectbox("Выберите магазин для анализа по сегментам:", all_stores_list, key="segment_store_selector")
 
     if selected_store_for_segment and 'Segment' in processed_df.columns:
-        segment_df = processed_df[processed_df['магазин'] == selected_store_for_segment]
-        segment_summary = segment_df.groupby('Segment').agg(
-            Plan_STUKI=('Plan_STUKI', 'sum'),
-            Fact_STUKI=('Fact_STUKI', 'sum'),
-            Plan_GRN=('Plan_GRN', 'sum'),
-            Fact_GRN=('Fact_GRN', 'sum')
+        # ИСПРАВЛЕННАЯ ЛОГИКА
+        full_segment_summary = processed_df.groupby(['магазин', 'Segment']).agg(
+            Plan_STUKI=('Plan_STUKI', 'sum'), Fact_STUKI=('Fact_STUKI', 'sum'),
+            Plan_GRN=('Plan_GRN', 'sum'), Fact_GRN=('Fact_GRN', 'sum')
         ).reset_index()
-
-        segment_summary['Отклонение_шт'] = segment_summary['Fact_STUKI'] - segment_summary['Plan_STUKI']
-        segment_summary['Отклонение_грн'] = segment_summary['Fact_GRN'] - segment_summary['Plan_GRN']
-        segment_summary['Выполнение_плана_%'] = np.where(segment_summary['Plan_STUKI'] > 0, (segment_summary['Fact_STUKI'] / segment_summary['Plan_STUKI']) * 100, 0)
         
-        st.dataframe(segment_summary.style.format({
-            'Plan_STUKI': '{:,.0f}', 'Fact_STUKI': '{:,.0f}', 'Отклонение_шт': '{:,.0f}',
-            'Plan_GRN': '{:,.0f} грн', 'Fact_GRN': '{:,.0f} грн', 'Отклонение_грн': '{:,.0f} грн',
-            'Выполнение_плана_%': '{:.1f}%'
-        }), use_container_width=True)
+        segment_summary = full_segment_summary[full_segment_summary['магазин'] == selected_store_for_segment].copy()
+
+        if not segment_summary.empty:
+            segment_summary['Отклонение_шт'] = segment_summary['Fact_STUKI'] - segment_summary['Plan_STUKI']
+            segment_summary['Отклонение_грн'] = segment_summary['Fact_GRN'] - segment_summary['Plan_GRN']
+            segment_summary['Выполнение_плана_%'] = np.where(segment_summary['Plan_STUKI'] > 0, (segment_summary['Fact_STUKI'] / segment_summary['Plan_STUKI']) * 100, np.where(segment_summary['Fact_STUKI'] > 0, 999, 0))
+            
+            st.dataframe(segment_summary.drop(columns=['магазин']).style.format({
+                'Plan_STUKI': '{:,.0f}', 'Fact_STUKI': '{:,.0f}', 'Отклонение_шт': '{:+,_d}',
+                'Plan_GRN': '{:,.0f}', 'Fact_GRN': '{:,.0f}', 'Отклонение_грн': '{:+,_d}',
+                'Выполнение_плана_%': '{:.1f}%'
+            }), use_container_width=True)
+        else:
+            st.info(f"Для магазина «{selected_store_for_segment}» нет данных по сегментам.")
     elif 'Segment' not in processed_df.columns:
         st.warning("Колонка 'Segment' не найдена. Анализ по сегментам невозможен.")
 
-
-    # --- Детальный анализ в боковой панели ---
     st.sidebar.header("🔍 Детальный анализ")
     problem_stores_list = sorted(problem_stores_df['магазин'].unique())
     analysis_scope = st.sidebar.radio("Область анализа:", ('Только проблемные', 'Все магазины'), horizontal=True)
