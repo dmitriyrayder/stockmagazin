@@ -55,6 +55,21 @@ def to_excel(df):
     processed_data = output.getvalue()
     return processed_data
 
+def calculate_plan_execution(df, fact_col, plan_col):
+    """Безопасно рассчитывает процент выполнения плана, обрабатывая деление на ноль."""
+    # 1. Инициализируем столбец нулями
+    result = pd.Series(0.0, index=df.index)
+    
+    # 2. Рассчитываем процент для случаев, где план > 0
+    plan_ok_mask = df[plan_col] > 0
+    result.loc[plan_ok_mask] = (100 * df.loc[plan_ok_mask, fact_col] / df.loc[plan_ok_mask, plan_col])
+
+    # 3. Обрабатываем случаи, где план = 0, а факт > 0 (бесконечность). Считаем это за 100%
+    inf_mask = (df[plan_col] == 0) & (df[fact_col] > 0)
+    result.loc[inf_mask] = 100.0
+    
+    return result
+
 # --- Основной интерфейс приложения Streamlit ---
 st.set_page_config(layout="wide")
 st.title("Анализатор 'План/Факт'")
@@ -66,7 +81,6 @@ st.sidebar.header("Загрузка файлов")
 plan_file = st.sidebar.file_uploader("1. Загрузите файл ПЛАНА", type=['csv', 'xlsx'])
 fact_file = st.sidebar.file_uploader("2. Загрузите файл ФАКТА", type=['csv', 'xlsx'])
 
-# Главный процессинг начинается только после загрузки обоих файлов
 if plan_file and fact_file:
     df_plan_wide = load_data(plan_file)
     df_fact = load_data(fact_file)
@@ -85,19 +99,17 @@ if plan_file and fact_file:
                 df_final = pd.merge(
                     df_plan_long, df_fact_prepared, how='outer', on=['ART', 'Magazin'], indicator=True
                 )
-                # Обработка пропусков перед расчетами
                 df_final['Plan_STUKI'] = df_final['Plan_STUKI'].fillna(0)
                 df_final['Fact_STUKI'] = df_final['Fact_STUKI'].fillna(0)
                 df_final['Segment'] = df_final['Segment'].fillna('Продажи без плана')
-                df_final['Price'] = df_final['Price'].fillna(0) # Важная проверка!
+                df_final['Price'] = df_final['Price'].fillna(0)
                 df_final['Plan_GRN'] = df_final['Plan_GRN'].fillna(0)
                 
-                # Расчеты в ШТУКАХ
                 df_final['Отклонение_штуки'] = df_final['Fact_STUKI'] - df_final['Plan_STUKI']
-                with pd.option_context('divide', 'ignore'):
-                    df_final['Выполнение_плана_%'] = (100 * df_final['Fact_STUKI'] / df_final['Plan_STUKI']).replace([float('inf'), -float('inf')], 100).fillna(0)
                 
-                # Расчеты в ДЕНЬГАХ
+                # ИСПРАВЛЕНИЕ: Используем безопасную функцию
+                df_final['Выполнение_плана_%'] = calculate_plan_execution(df_final, 'Fact_STUKI', 'Plan_STUKI')
+
                 df_final['Fact_GRN'] = (df_final['Fact_STUKI'] * df_final['Price'])
                 df_final['Отклонение_грн'] = df_final['Fact_GRN'] - df_final['Plan_GRN']
                 
@@ -109,7 +121,7 @@ if plan_file and fact_file:
                 st.dataframe(df_final.head())
             else:
                 st.error("Ошибка на этапе подготовки данных. Проверьте формат файлов.")
-                df_final = None # Явно указываем, что df_final не создан
+                df_final = None
     else:
         st.error("Не удалось прочитать один или оба файла.")
         df_final = None
@@ -120,7 +132,6 @@ if plan_file and fact_file:
     if df_final is not None:
         st.header("2. Аналитическая сводка")
 
-        # --- БЛОК 3: ФИЛЬТРЫ ДЛЯ СВОДНЫХ ТАБЛИЦ И САМИ ТАБЛИЦЫ ---
         max_perc_pivot = st.slider(
             'Показать агрегированные данные с выполнением плана ДО, %', 
             min_value=0, max_value=200, value=100,
@@ -130,8 +141,9 @@ if plan_file and fact_file:
         st.subheader("Сводка в ШТУКАХ")
         try:
             pivot_stuki = pd.pivot_table(df_final, index=['Magazin', 'Segment'], values=['Plan_STUKI', 'Fact_STUKI', 'Отклонение_штуки'], aggfunc='sum')
-            with pd.option_context('divide', 'ignore'):
-                pivot_stuki['Выполнение_плана_%'] = (100 * pivot_stuki['Fact_STUKI'] / pivot_stuki['Plan_STUKI']).replace([float('inf'), -float('inf')], 100).fillna(0)
+            # ИСПРАВЛЕНИЕ: Используем безопасную функцию
+            pivot_stuki['Выполнение_плана_%'] = calculate_plan_execution(pivot_stuki, 'Fact_STUKI', 'Plan_STUKI')
+            
             filtered_pivot_stuki = pivot_stuki[pivot_stuki['Выполнение_плана_%'] <= max_perc_pivot]
             st.dataframe(filtered_pivot_stuki.style.format({
                 'Plan_STUKI': '{:,.0f}', 'Fact_STUKI': '{:,.0f}', 'Отклонение_штуки': '{:,.0f}', 'Выполнение_плана_%': '{:.1f}%'
@@ -142,8 +154,9 @@ if plan_file and fact_file:
         st.subheader("Сводка в ДЕНЬГАХ (ГРН)")
         try:
             pivot_grn = pd.pivot_table(df_final, index=['Magazin', 'Segment'], values=['Plan_GRN', 'Fact_GRN', 'Отклонение_грн'], aggfunc='sum')
-            with pd.option_context('divide', 'ignore'):
-                pivot_grn['Выполнение_плана_%'] = (100 * pivot_grn['Fact_GRN'] / pivot_grn['Plan_GRN']).replace([float('inf'), -float('inf')], 100).fillna(0)
+            # ИСПРАВЛЕНИЕ: Используем безопасную функцию
+            pivot_grn['Выполнение_плана_%'] = calculate_plan_execution(pivot_grn, 'Fact_GRN', 'Plan_GRN')
+            
             filtered_pivot_grn = pivot_grn[pivot_grn['Выполнение_плана_%'] <= max_perc_pivot]
             st.dataframe(filtered_pivot_grn.style.format({
                 'Plan_GRN': '{:,.0f} грн', 'Fact_GRN': '{:,.0f} грн', 'Отклонение_грн': '{:,.0f} грн', 'Выполнение_плана_%': '{:.1f}%'
@@ -151,11 +164,7 @@ if plan_file and fact_file:
         except Exception as e:
             st.error(f"Не удалось построить сводную таблицу в деньгах: {e}")
 
-        # --------------------------------------------------------------------- #
-        # --- БЛОК 4: ДЕТАЛЬНАЯ ФИЛЬТРАЦИЯ И ВЫГРУЗКА ---
-        # --------------------------------------------------------------------- #
         st.header("3. Детальный анализ и выгрузка отчета")
-        
         col1, col2 = st.columns(2)
         with col1:
             all_magazins = sorted(df_final['Magazin'].unique())
