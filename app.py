@@ -5,7 +5,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
 
-st.set_page_config(page_title="План/Факт Анализ v6.5", page_icon="🏆", layout="wide")
+st.set_page_config(page_title="План/Факт Анализ v6.6", page_icon="🏆", layout="wide")
 st.title("🏆 Универсальный сервис для План/Факт анализа")
 
 # --- Вспомогательные функции ---
@@ -50,7 +50,7 @@ def transform_wide_to_flat(_wide_df, id_vars):
         flat_parts.append(part_df)
         
     if not flat_parts:
-        return None # Дополнительная проверка на пустой список
+        return None
         
     flat_df = pd.concat(flat_parts, ignore_index=True)
     flat_df.dropna(subset=['магазин'], inplace=True)
@@ -87,7 +87,7 @@ with col1:
     st.subheader("Источник данных для 'Плана'")
     plan_source_type = st.radio(
         "Выберите источник:",
-        ("Загрузить файл", "Использовать Google Sheet"),
+        ("Использовать Google Sheet", "Загрузить файл"),
         key="plan_source",
         horizontal=True
     )
@@ -105,8 +105,6 @@ with col1:
         if g_sheet_url:
             try:
                 csv_url = g_sheet_url.replace("/edit?usp=sharing", "/export?format=csv").replace("/edit", "/export?format=csv")
-                # --- ИЗМЕНЕНИЕ ЗДЕСЬ ---
-                # Добавлены параметры sep=None и engine='python' для автоопределения разделителя (`,` или `;`)
                 plan_df_original = pd.read_csv(csv_url, sep=None, engine='python')
                 st.info(f"✅ Таблица успешно загружена. Найдено {len(plan_df_original)} строк и {len(plan_df_original.columns)} колонок.")
             except Exception as e:
@@ -140,12 +138,17 @@ if plan_df_original is not None and fact_df_original is not None:
 
     st.header("2. Настройка и обработка данных")
     
-    st.info("Ваша Google Таблица имеет **'Плоский (стандартный)'** формат. Пожалуйста, выберите его.")
-    plan_format = st.radio(
-        "Выберите формат данных 'План':",
-        ('Плоский (стандартный)', 'Широкий (горизонтальный)'), horizontal=True,
-        help="Широкий формат - когда данные по магазинам идут вправо по колонкам."
-    )
+    # --- ИЗМЕНЕНИЕ ЗДЕСЬ: Автоматический выбор формата ---
+    if plan_source_type == "Использовать Google Sheet":
+        st.info("Для Google Таблицы автоматически выбран **'Плоский (стандартный)'** формат.")
+        plan_format = 'Плоский (стандартный)'
+    else: # Если источник "Загрузить файл", даем пользователю выбор
+        plan_format = st.radio(
+            "Выберите формат данных 'План':",
+            ('Плоский (стандартный)', 'Широкий (горизонтальный)'), horizontal=True,
+            help="Широкий формат - когда данные по магазинам идут вправо по колонкам."
+        )
+    # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
     with st.form("processing_form"):
         plan_mappings = {}
@@ -281,9 +284,8 @@ if plan_df_original is not None and fact_df_original is not None:
 
 # --- Аналитика ---
 if st.session_state.processed_df is not None:
-    # Весь остальной код аналитики остается без изменений...
     processed_df = st.session_state.processed_df
-    # ...
+
     st.header("3. Быстрый анализ отклонений по магазинам и сегментам")
     
     if 'Segment' in processed_df.columns:
