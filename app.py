@@ -5,7 +5,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
 
-st.set_page_config(page_title="План/Факт Анализ v6.0", page_icon="🏆", layout="wide")
+st.set_page_config(page_title="План/Факт Анализ v6.1", page_icon="🏆", layout="wide")
 st.title("🏆 Универсальный сервис для План/Факт анализа")
 
 # --- Вспомогательные функции ---
@@ -350,22 +350,61 @@ if st.session_state.processed_df is not None:
                 st.metric("Выполнение по стоимости", f"{metrics['money_completion']:.1f}%",
                          delta=f"{metrics['money_completion'] - 100:.1f}%", delta_color=completion_color)
 
-            # 3. Структура сегментов
-            if len(all_segments) > 1 and 'Segment' in store_df.columns:
-                st.subheader("🥧 Структура сегментов")
-                segment_data = store_df.groupby('Segment').agg({'Plan_GRN': 'sum', 'Fact_GRN': 'sum'}).reset_index()
-                segment_data = segment_data[segment_data['Plan_GRN'] > 0]
+            # 3. Структура сегментов (ИЗМЕНЕННЫЙ БЛОК)
+            if 'Segment' in filtered_df.columns and filtered_df['Segment'].nunique() > 1:
+                st.subheader("🥧 Структура сегментов (по деньгам)")
                 
-                if not segment_data.empty:
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        fig_pie_plan = px.pie(segment_data, values='Plan_GRN', names='Segment',
-                                            title='План по сегментам (грн.)', hole=0.3)
-                        st.plotly_chart(fig_pie_plan, use_container_width=True)
-                    with col2:
-                        fig_pie_fact = px.pie(segment_data, values='Fact_GRN', names='Segment',
-                                            title='Факт по сегментам (грн.)', hole=0.3)
-                        st.plotly_chart(fig_pie_fact, use_container_width=True)
+                # Агрегируем данные по сегментам из отфильтрованного датафрейма
+                segment_data = filtered_df.groupby('Segment').agg(
+                    Plan_GRN=('Plan_GRN', 'sum'),
+                    Fact_GRN=('Fact_GRN', 'sum')
+                ).reset_index()
+
+                # Получаем общие суммы из уже рассчитанных метрик
+                total_plan_grn = metrics['total_plan_money']
+                total_fact_grn = metrics['total_fact_money']
+                
+                # Рассчитываем долю каждого сегмента в плане и факте (%)
+                segment_data['Структура План, %'] = (segment_data['Plan_GRN'] / total_plan_grn * 100) if total_plan_grn > 0 else 0
+                segment_data['Структура Факт, %'] = (segment_data['Fact_GRN'] / total_fact_grn * 100) if total_fact_grn > 0 else 0
+
+                # Рассчитываем отклонение в процентных пунктах (п.п.)
+                segment_data['Отклонение, п.п.'] = segment_data['Структура Факт, %'] - segment_data['Структура План, %']
+
+                # Отбираем колонки для отображения
+                display_table = segment_data[[
+                    'Segment', 'Структура План, %', 'Структура Факт, %', 'Отклонение, п.п.'
+                ]].rename(columns={'Segment': 'Сегмент'})
+
+                # Сортируем по плановой доле для логичного отображения
+                display_table = display_table.sort_values(by='Структура План, %', ascending=False)
+
+                st.dataframe(
+                    display_table,
+                    column_config={
+                        "Структура План, %": st.column_config.ProgressColumn(
+                            "Структура План, %",
+                            help="Доля сегмента в общей сумме Плана (по деньгам)",
+                            format="%.1f%%",
+                            min_value=0,
+                            max_value=100,
+                        ),
+                        "Структура Факт, %": st.column_config.ProgressColumn(
+                            "Структура Факт, %",
+                            help="Доля сегмента в общей сумме Факта (по деньгам)",
+                            format="%.1f%%",
+                            min_value=0,
+                            max_value=100,
+                        ),
+                        "Отклонение, п.п.": st.column_config.NumberColumn(
+                            "Отклонение, п.п.",
+                            help="Разница между фактической и плановой долей (Факт % - План %)",
+                            format="%+,.1f",
+                        )
+                    },
+                    use_container_width=True,
+                    hide_index=True
+                )
 
             # 4. Спидометры
             if selected_segment != 'Все':
