@@ -1,338 +1,454 @@
-# app.py
-
 import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
+import plotly.graph_objects as go
 from datetime import datetime
-from io import BytesIO
-import warnings
 
-# Игнорируем предупреждения для чистоты вывода
-warnings.filterwarnings('ignore')
+st.set_page_config(page_title="План/Факт Анализ v6.0", page_icon="🏆", layout="wide")
+st.title("🏆 Универсальный сервис для План/Факт анализа")
 
-# --- 1. Настройка страницы ---
-st.set_page_config(
-    page_title="План/Факт Анализ v8.5 (Fix)",
-    page_icon="🛠️",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-
-# --- 2. CSS стили для кастомного оформления ---
-st.markdown("""
-<style>
-    .success-box { background-color: #d4edda; border: 1px solid #c3e6cb; border-radius: 5px; padding: 1rem; margin: 1rem 0; }
-    .error-box { background-color: #f8d7da; border: 1px solid #f5c6cb; border-radius: 5px; padding: 1rem; margin: 1rem 0; }
-</style>
-""", unsafe_allow_html=True)
-
-# --- 3. Заголовок и инструкции ---
-st.title("🛠️ Универсальный сервис для План/Факт анализа v8.5")
-st.info(
-    "**Инструкция:** 1️⃣ Загрузите файлы → 2️⃣ Настройте сопоставление полей → 3️⃣ Запустите анализ"
-)
-
-# --- 4. Ключевые функции (с кешированием для производительности) ---
+# --- Вспомогательные функции ---
+@st.cache_data
+def analyze_data_quality(df, file_name):
+    """Анализирует качество данных в DataFrame."""
+    quality_info = []
+    for col in df.columns:
+        total_rows = len(df)
+        non_null_count = df[col].notna().sum()
+        null_count = df[col].isna().sum()
+        
+        valid_numeric = pd.to_numeric(df[col], errors='coerce').notna().sum() if df[col].dtype in ['int64', 'float64'] else 'N/A'
+        quality_info.append({
+            'Файл': file_name, 'Колонка': col, 'Общее количество': total_rows,
+            'Заполнено': non_null_count, 'Пустые': null_count,
+            'Валидные числа': valid_numeric, 'Процент заполнения': f"{(non_null_count/total_rows*100):.1f}%"
+        })
+    return pd.DataFrame(quality_info)
 
 @st.cache_data
-def load_excel_file(file):
-    try:
-        return pd.read_excel(file)
-    except Exception as e:
-        st.error(f"Ошибка загрузки файла: {str(e)}")
+def transform_wide_to_flat(_wide_df, id_vars):
+    """Преобразует широкий DataFrame плана в плоский."""
+    plan_data_cols = [col for col in _wide_df.columns if col not in id_vars]
+    
+    magazin_cols = sorted([col for col in plan_data_cols if col.split('.')[0] == 'Magazin'])
+    stuki_cols = sorted([col for col in plan_data_cols if col.split('.')[0] == 'Plan_STUKI'])
+    grn_cols = sorted([col for col in plan_data_cols if col.split('.')[0] == 'Plan_GRN'])
+
+    if not (len(magazin_cols) == len(stuki_cols) == len(grn_cols)):
+        st.error("Ошибка структуры файла Плана: Количество колонок не совпадает.")
         return None
+        
+    flat_parts = []
+    for i in range(len(magazin_cols)):
+        current_cols = id_vars + [magazin_cols[i], stuki_cols[i], grn_cols[i]]
+        part_df = _wide_df[current_cols].copy()
+        
+        part_df.rename(columns={
+            magazin_cols[i]: 'магазин', stuki_cols[i]: 'Plan_STUKI', grn_cols[i]: 'Plan_GRN'
+        }, inplace=True)
+        flat_parts.append(part_df)
+        
+    flat_df = pd.concat(flat_parts, ignore_index=True)
+    flat_df.dropna(subset=['магазин'], inplace=True)
+    return flat_df
 
-@st.cache_data
-def clean_and_prepare_data(df, column_mappings):
-    if df is None or not column_mappings: return None
-    try:
-        rename_map = {v: k for k, v in column_mappings.items() if v and v in df.columns}
-        cleaned_df = df[list(rename_map.keys())].rename(columns=rename_map).copy()
-        
-        for col in ['магазин', 'ART', 'Describe', 'MOD', 'brend', 'Segment']:
-            if col in cleaned_df.columns:
-                cleaned_df[col] = cleaned_df[col].astype(str).str.strip().replace('nan', '')
-        
-        for col in ['Plan_STUKI', 'Fact_STUKI', 'Plan_GRN', 'Price']:
-            if col in cleaned_df.columns:
-                cleaned_df[col] = pd.to_numeric(cleaned_df[col], errors='coerce').fillna(0)
-        
-        if 'магазин' in cleaned_df.columns:
-            cleaned_df = cleaned_df.dropna(subset=['магазин'])[cleaned_df['магазин'] != '']
-        if 'ART' in cleaned_df.columns:
-            cleaned_df = cleaned_df.dropna(subset=['ART'])[cleaned_df['ART'] != '']
-
-        return cleaned_df
-    except Exception as e:
-        st.error(f"Ошибка при подготовке данных: {str(e)}")
-        return None
-
-@st.cache_data
-def transform_wide_to_flat(wide_df, id_vars):
-    if wide_df is None or not id_vars: return None
-    try:
-        plan_data_cols = [col for col in wide_df.columns if col not in id_vars]
-        
-        magazin_cols = sorted([col for col in plan_data_cols if 'magazin' in str(col).lower() or 'магазин' in str(col).lower()])
-        stuki_cols = sorted([col for col in plan_data_cols if 'stuki' in str(col).lower() or 'штук' in str(col).lower()])
-        grn_cols = sorted([col for col in plan_data_cols if 'grn' in str(col).lower() or 'грн' in str(col).lower() or 'сумм' in str(col).lower()])
-        
-        if not (magazin_cols and stuki_cols and grn_cols):
-            raise ValueError("Не найдены необходимые колонки для преобразования широкого формата (магазин, штуки, грн).")
-        
-        min_length = min(len(magazin_cols), len(stuki_cols), len(grn_cols))
-        
-        flat_parts = []
-        for i in range(min_length):
-            current_cols = id_vars + [magazin_cols[i], stuki_cols[i], grn_cols[i]]
-            part_df = wide_df[current_cols].copy()
-            part_df.rename(columns={magazin_cols[i]: 'магазин', stuki_cols[i]: 'Plan_STUKI', grn_cols[i]: 'Plan_GRN'}, inplace=True)
-            flat_parts.append(part_df)
-        
-        flat_df = pd.concat(flat_parts, ignore_index=True).dropna(subset=['магазин'])
-        flat_df['магазин'] = flat_df['магазин'].astype(str).str.strip()
-        flat_df = flat_df[flat_df['магазин'] != '']
-        return flat_df
-    except Exception as e:
-        st.error(f"Ошибка при преобразовании широкого формата: {str(e)}")
-        return None
-
-def calculate_advanced_metrics(df):
-    if df is None or df.empty: return {}
-    metrics = {
-        'total_plan_qty': df['Plan_STUKI'].sum(), 'total_fact_qty': df['Fact_STUKI'].sum(),
-        'total_plan_money': df['Plan_GRN'].sum(), 'total_fact_money': df['Fact_GRN'].sum()
+def calculate_metrics(df):
+    """Рассчитывает основные метрики для данных."""
+    total_plan_qty = df['Plan_STUKI'].sum()
+    total_fact_qty = df['Fact_STUKI'].sum()
+    total_plan_money = df['Plan_GRN'].sum()
+    total_fact_money = df['Fact_GRN'].sum()
+    
+    return {
+        'total_plan_qty': total_plan_qty, 'total_fact_qty': total_fact_qty,
+        'total_plan_money': total_plan_money, 'total_fact_money': total_fact_money,
+        'qty_deviation': total_fact_qty - total_plan_qty, 'money_deviation': total_fact_money - total_plan_money,
+        'qty_completion': (total_fact_qty / total_plan_qty * 100) if total_plan_qty > 0 else 0,
+        'money_completion': (total_fact_money / total_plan_money * 100) if total_plan_money > 0 else 0
     }
-    metrics['qty_deviation'] = metrics['total_fact_qty'] - metrics['total_plan_qty']
-    metrics['money_deviation'] = metrics['total_fact_money'] - metrics['total_plan_money']
-    metrics['qty_completion'] = (metrics['total_fact_qty'] / metrics['total_plan_qty'] * 100) if metrics['total_plan_qty'] else 0
-    metrics['money_completion'] = (metrics['total_fact_money'] / metrics['total_plan_money'] * 100) if metrics['total_plan_money'] else 0
-    metrics['total_items'] = len(df)
-    metrics['items_with_stock'] = len(df[df['Fact_STUKI'] > 0])
-    metrics['items_out_of_stock'] = metrics['total_items'] - metrics['items_with_stock']
-    return metrics
 
-def convert_df_to_excel(df):
-    try:
-        buffer = BytesIO()
-        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-            df.to_excel(writer, index=False, sheet_name='Анализ')
-            worksheet = writer.sheets['Анализ']
-            for column in worksheet.columns:
-                max_length = 0
-                column_letter = column[0].column_letter
-                for cell in column:
-                    if (value := cell.value) is not None:
-                        max_length = max(max_length, len(str(value)))
-                worksheet.column_dimensions[column_letter].width = min(max_length + 2, 50)
-        buffer.seek(0)
-        return buffer.getvalue()
-    except Exception as e:
-        st.error(f"Ошибка при создании Excel файла: {str(e)}")
-        return None
-
-# --- 5. Инициализация Session State ---
+# --- Инициализация Session State ---
 if 'processed_df' not in st.session_state:
     st.session_state.processed_df = None
 
-# --- 6. Основной интерфейс приложения ---
-
-st.header("📁 Шаг 1: Загрузка файлов")
+# --- Шаг 1: Загрузка файлов ---
+st.header("1. Загрузка файлов")
 col1, col2 = st.columns(2)
-plan_file = col1.file_uploader("Загрузите файл 'План'", type=["xlsx", "xls"], key="plan_uploader")
-fact_file = col2.file_uploader("Загрузите файл 'Факт'", type=["xlsx", "xls"], key="fact_uploader")
+with col1:
+    plan_file = st.file_uploader("Загрузите файл 'План'", type=["xlsx", "xls"], key="plan_uploader")
+with col2:
+    fact_file = st.file_uploader("Загрузите файл 'Факт'", type=["xlsx", "xls"], key="fact_uploader")
 
+# --- Анализ качества данных ---
 if plan_file and fact_file:
-    st.markdown("---")
-    st.subheader("Шаг 1.1: Статус загрузки и чтения данных")
+    plan_df_original = pd.read_excel(plan_file)
+    fact_df_original = pd.read_excel(fact_file)
     
-    plan_df_original = load_excel_file(plan_file)
-    fact_df_original = load_excel_file(fact_file)
+    st.header("1.1. Анализ качества загруженных данных")
     
-    initial_plan_rows = len(plan_df_original) if plan_df_original is not None else 0
-    initial_fact_rows = len(fact_df_original) if fact_df_original is not None else 0
+    plan_quality = analyze_data_quality(plan_df_original, "План")
+    fact_quality = analyze_data_quality(fact_df_original, "Факт")
+    quality_df = pd.concat([plan_quality, fact_quality], ignore_index=True)
     
-    temp_plan_df = plan_df_original.dropna(how='all') if initial_plan_rows > 0 else pd.DataFrame()
-    temp_fact_df = fact_df_original.dropna(how='all') if initial_fact_rows > 0 else pd.DataFrame()
+    st.subheader("📊 Статистика по колонкам")
+    st.dataframe(quality_df, use_container_width=True)
     
-    status_data = {
-        "Файл": ["План", "Факт"], "Всего строк в файле": [initial_plan_rows, initial_fact_rows],
-        "Строк с данными (непустых)": [len(temp_plan_df), len(temp_fact_df)],
-        "Пустых или некорректных строк": [initial_plan_rows - len(temp_plan_df), initial_fact_rows - len(temp_fact_df)]
-    }
-    st.dataframe(pd.DataFrame(status_data), use_container_width=True)
-    st.markdown("---")
-    
-    st.header("⚙️ Шаг 2: Настройка и обработка данных")
-    if plan_df_original is not None and fact_df_original is not None:
-        plan_format = st.radio("Выберите формат файла 'План':", ('Плоский (стандартный)', 'Широкий (горизонтальный)'), horizontal=True)
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("Колонок в файле План", len(plan_df_original.columns))
+        st.metric("Строк в файле План", len(plan_df_original))
+    with col2:
+        st.metric("Колонок в файле Факт", len(fact_df_original.columns))
+        st.metric("Строк в файле Факт", len(fact_df_original))
 
-        with st.form("processing_form"):
-            st.subheader("🔗 Сопоставление полей")
-            col_map1, col_map2 = st.columns(2)
+    st.header("2. Настройка и обработка данных")
+    
+    plan_format = st.radio(
+        "Выберите формат вашего файла 'План':",
+        ('Плоский (стандартный)', 'Широкий (горизонтальный)'), horizontal=True,
+        help="Широкий формат - когда данные по магазинам идут вправо по колонкам."
+    )
 
-            with col_map1:
-                st.markdown("**📋 Поля из файла 'План'**")
-                if plan_format == 'Широкий (горизонтальный)':
-                    id_vars = st.multiselect("Выберите идентификационные поля товара", options=plan_df_original.columns.tolist(), default=[c for c in ['ART', 'Describe', 'MOD', 'Price', 'brend', 'Segment'] if c in plan_df_original.columns])
-                    plan_mappings = {}
-                else:
-                    id_vars = []
-                    PLAN_FIELDS = {'магазин': 'Магазин', 'ART': 'Артикул', 'Describe': 'Описание', 'MOD': 'Модель', 'Price': 'Цена', 'brend': 'Бренд', 'Segment': 'Сегмент', 'Plan_STUKI': 'План (шт.)', 'Plan_GRN': 'План (сумма)'}
-                    plan_cols = [''] + plan_df_original.columns.tolist()
-                    plan_mappings = {internal: st.selectbox(f"{'⭐ ' if internal in ['магазин', 'ART', 'Plan_STUKI', 'Plan_GRN'] else ''}{display}", plan_cols, key=f'plan_{internal}') for internal, display in PLAN_FIELDS.items()}
+    with st.form("processing_form"):
+        id_vars = []
+        if plan_format == 'Широкий (горизонтальный)':
+            st.subheader("Настройка для широкого файла 'План'")
+            all_plan_columns = plan_df_original.columns.tolist()
+            id_vars = st.multiselect(
+                "Выберите все колонки, описывающие товар (НЕ относящиеся к магазинам)",
+                options=all_plan_columns,
+                default=[col for col in ['ART', 'Describe', 'MOD', 'Price', 'Brend', 'Segment'] if col in all_plan_columns]
+            )
+
+        st.subheader("Сопоставление для файла 'Факт'")
+        fact_mappings = {}
+        fact_cols = fact_df_original.columns.tolist()
+        FACT_REQUIRED_FIELDS = {
+            'магазин': 'Магазин', 'ART': 'Артикул', 'Describe': 'Описание', 'MOD': 'Модель',
+            'brend': 'Бренд', 'Fact_STUKI': 'Фактические остатки (шт.)'
+        }
+        for internal, display in FACT_REQUIRED_FIELDS.items():
+            fact_mappings[internal] = st.selectbox(f'"{display}"', fact_cols, key=f'fact_{internal}')
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            remove_duplicates = st.checkbox("Удалить дубликаты", value=True)
+        with col2:
+            fill_zeros = st.checkbox("Заполнить пропуски нулями", value=True)
             
-            with col_map2:
-                st.markdown("**📋 Поля из файла 'Факт'**")
-                FACT_FIELDS = {'магазин': 'Магазин', 'ART': 'Артикул', 'Describe': 'Описание', 'MOD': 'Модель', 'Fact_STUKI': 'Факт (шт.)'}
-                fact_cols = [''] + fact_df_original.columns.tolist()
-                fact_mappings = {internal: st.selectbox(f"{'⭐ ' if internal in ['магазин', 'ART', 'Fact_STUKI'] else ''}{display}", fact_cols, key=f'fact_{internal}') for internal, display in FACT_FIELDS.items()}
+        submitted = st.form_submit_button("🚀 Обработать и запустить анализ", type="primary")
 
-            submitted = st.form_submit_button("🚀 Обработать и запустить анализ", type="primary", use_container_width=True)
+    if submitted:
+        try:
+            # Обработка файла План
+            if plan_format == 'Широкий (горизонтальный)':
+                if not id_vars:
+                    st.error("Для широкого формата необходимо выбрать идентификационные колонки.")
+                    st.stop()
+                plan_df = transform_wide_to_flat(plan_df_original, id_vars)
+            else:
+                plan_df = plan_df_original.rename(columns={'Magazin': 'магазин'})
+                
+            if plan_df is None:
+                st.error("Не удалось обработать файл 'План'.")
+                st.stop()
+            
+            # Обработка файла Факт
+            fact_rename_map = {v: k for k, v in fact_mappings.items()}
+            fact_df = fact_df_original[list(fact_rename_map.keys())].rename(columns=fact_rename_map)
 
-        if submitted:
-            with st.spinner("Выполняется обработка и объединение данных..."):
-                try:
-                    if plan_format == 'Широкий (горизонтальный)':
-                        if not id_vars: raise ValueError("Для широкого формата необходимо выбрать идентификационные поля.")
-                        plan_df = transform_wide_to_flat(plan_df_original, id_vars)
-                    else:
-                        if not all(plan_mappings.get(f) for f in ['магазин', 'ART', 'Plan_STUKI', 'Plan_GRN']): raise ValueError("Не выбраны обязательные поля для 'Плана'.")
-                        plan_df = clean_and_prepare_data(plan_df_original, plan_mappings)
-                    
-                    if not all(fact_mappings.get(f) for f in ['магазин', 'ART', 'Fact_STUKI']): raise ValueError("Не выбраны обязательные поля для 'Факта'.")
-                    fact_df = clean_and_prepare_data(fact_df_original, fact_mappings)
+            # Удаление дубликатов
+            merge_keys = ['магазин', 'ART', 'Describe', 'MOD']
+            if remove_duplicates:
+                plan_df = plan_df.drop_duplicates(subset=merge_keys)
+                fact_df = fact_df.drop_duplicates(subset=merge_keys)
+            
+            # Приведение типов для слияния
+            for key in merge_keys:
+                if key in plan_df.columns and key in fact_df.columns:
+                    plan_df[key] = plan_df[key].astype(str)
+                    fact_df[key] = fact_df[key].astype(str)
 
-                    if plan_df is None or fact_df is None: raise ValueError("Ошибка подготовки данных. Проверьте настройки.")
+            # Слияние данных
+            fact_cols_to_merge = merge_keys + ['Fact_STUKI']
+            merged_df = pd.merge(plan_df, fact_df[fact_cols_to_merge], on=merge_keys, how='outer')
 
-                    merge_keys = ['магазин', 'ART']
-                    for key in ['Describe', 'MOD']:
-                        if key in plan_df.columns and key in fact_df.columns: merge_keys.append(key)
-                    
-                    plan_cols_to_merge = [col for col in plan_df.columns if col not in ['Fact_STUKI']]
-                    fact_cols_to_merge = [col for col in merge_keys + ['Fact_STUKI'] if col in fact_df.columns]
-                    merged_df = pd.merge(plan_df[plan_cols_to_merge], fact_df[fact_cols_to_merge], on=merge_keys, how='outer')
+            # Обработка числовых колонок
+            numeric_columns = ['Plan_STUKI', 'Fact_STUKI', 'Plan_GRN', 'Price']
+            for col in numeric_columns:
+                if col in merged_df.columns:
+                    merged_df[col] = pd.to_numeric(merged_df[col], errors='coerce')
+                    if fill_zeros:
+                        merged_df[col] = merged_df[col].fillna(0)
+            
+            # Расчеты
+            merged_df['Fact_GRN'] = merged_df['Fact_STUKI'] * merged_df['Price']
+            merged_df['Отклонение_шт'] = merged_df['Fact_STUKI'] - merged_df['Plan_STUKI']
+            merged_df['Отклонение_грн'] = merged_df['Fact_GRN'] - merged_df['Plan_GRN']
+            merged_df['Отклонение_%_шт'] = np.where(
+                merged_df['Plan_STUKI'] > 0, 
+                merged_df['Отклонение_шт'] / merged_df['Plan_STUKI'] * 100, 
+                np.where(merged_df['Отклонение_шт'] != 0, np.inf, 0)
+            )
+            merged_df['Отклонение_%_грн'] = np.where(
+                merged_df['Plan_GRN'] > 0, 
+                merged_df['Отклонение_грн'] / merged_df['Plan_GRN'] * 100, 
+                np.where(merged_df['Отклонение_грн'] != 0, np.inf, 0)
+            )
+            
+            st.session_state.processed_df = merged_df
+            st.success("✅ Данные успешно обработаны!")
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Записей в плане", len(plan_df))
+            with col2:
+                st.metric("Записей в факте", len(fact_df))
+            with col3:
+                st.metric("Записей после объединения", len(merged_df))
 
-                    for col in ['Plan_STUKI', 'Fact_STUKI', 'Plan_GRN', 'Price']:
-                        if col in merged_df.columns: merged_df[col] = merged_df[col].fillna(0)
-                    
-                    merged_df['Fact_GRN'] = (merged_df['Fact_STUKI'] * merged_df['Price']).fillna(0)
-                    merged_df['Отклонение_шт'] = merged_df['Fact_STUKI'] - merged_df['Plan_STUKI']
-                    merged_df['Отклонение_грн'] = merged_df['Fact_GRN'] - merged_df['Plan_GRN']
-                    merged_df['Отклонение_%_шт'] = np.where(merged_df['Plan_STUKI'] != 0, (merged_df['Отклонение_шт'] / merged_df['Plan_STUKI']) * 100, np.where(merged_df['Fact_STUKI'] != 0, 999, 0))
-                    merged_df['Отклонение_%_грн'] = np.where(merged_df['Plan_GRN'] != 0, (merged_df['Отклонение_грн'] / merged_df['Plan_GRN']) * 100, np.where(merged_df['Fact_GRN'] != 0, 999, 0))
-                    
-                    st.session_state.processed_df = merged_df
-                    st.markdown(f"""<div class="success-box"><h4>✅ Данные успешно обработаны!</h4><p><strong>Итоговая таблица:</strong> {len(merged_df)} записей</p><p><strong>Магазинов:</strong> {merged_df['магазин'].nunique()}</p><p><strong>Уникальных товаров:</strong> {merged_df['ART'].nunique()}</p></div>""", unsafe_allow_html=True)
-                except Exception as e:
-                    st.session_state.processed_df = None
-                    st.markdown(f"""<div class="error-box"><h4>❌ Произошла ошибка при обработке</h4><p>{str(e)}</p></div>""", unsafe_allow_html=True)
+        except Exception as e:
+            st.session_state.processed_df = None
+            st.error(f"❌ Ошибка при обработке данных: {e}")
 
-# --- 7. Блок аналитики ---
+# --- Аналитика ---
 if st.session_state.processed_df is not None:
     processed_df = st.session_state.processed_df
-    all_stores_list = sorted(processed_df['магазин'].dropna().unique())
 
-    st.header("📊 Шаг 3: Сводный анализ по магазинам")
-    store_summary = processed_df.groupby('магазин').agg({'Plan_STUKI': 'sum', 'Fact_STUKI': 'sum', 'Plan_GRN': 'sum', 'Fact_GRN': 'sum'}).reset_index()
+    st.header("3. Быстрый анализ отклонений по магазинам")
+    
+    # Агрегация по магазинам
+    store_summary = processed_df.groupby('магазин').agg({
+        'Plan_STUKI': 'sum', 'Fact_STUKI': 'sum', 'Plan_GRN': 'sum', 'Fact_GRN': 'sum'
+    }).reset_index()
+    
     store_summary['Отклонение_шт'] = store_summary['Fact_STUKI'] - store_summary['Plan_STUKI']
     store_summary['Отклонение_грн'] = store_summary['Fact_GRN'] - store_summary['Plan_GRN']
-    store_summary['Отклонение_%_шт_abs'] = np.where(store_summary['Plan_STUKI'] != 0, abs(store_summary['Отклонение_шт']) / store_summary['Plan_STUKI'] * 100, 999)
-
-    col1, col2 = st.columns([3, 1])
-    threshold = col1.slider("Показать магазины с отклонением в штуках больше (%)", 0, 100, 10, 5)
-    sort_by = col2.selectbox("Сортировать по:", ['Отклонение_%_шт_abs', 'Отклонение_шт', 'Отклонение_грн'], index=0, format_func=lambda x: {'Отклонение_%_шт_abs': 'Отклонение %', 'Отклонение_шт': 'Отклонение шт.', 'Отклонение_грн': 'Отклонение грн.'}.get(x))
-
-    problem_stores_df = store_summary[store_summary['Отклонение_%_шт_abs'] > threshold].sort_values(sort_by, ascending=False)
+    store_summary['Отклонение_%_шт'] = np.where(
+        store_summary['Plan_STUKI'] > 0, 
+        abs(store_summary['Отклонение_шт']) / store_summary['Plan_STUKI'] * 100,
+        np.where(store_summary['Отклонение_шт'] != 0, np.inf, 0)
+    )
+    store_summary['Отклонение_%_грн'] = np.where(
+        store_summary['Plan_GRN'] > 0, 
+        abs(store_summary['Отклонение_грн']) / store_summary['Plan_GRN'] * 100,
+        np.where(store_summary['Отклонение_грн'] != 0, np.inf, 0)
+    )
+    
+    # Настройки фильтрации
+    col1, col2 = st.columns(2)
+    with col1:
+        threshold = st.number_input("Показать магазины, где отклонение в штуках БОЛЬШЕ чем (%)", min_value=0, max_value=500, value=10, step=5)
+    with col2:
+        sort_by = st.selectbox("Сортировать по", ['Отклонение_%_шт', 'Отклонение_%_грн', 'Отклонение_шт', 'Отклонение_грн'])
+    
+    # Фильтрация проблемных магазинов
+    problem_stores_df = store_summary[store_summary['Отклонение_%_шт'] > threshold].copy().sort_values(by=sort_by, ascending=False)
+    
+    st.write(f"**Найдено {len(problem_stores_df)} магазинов с отклонением > {threshold}%:**")
     
     if not problem_stores_df.empty:
-        st.success(f"🎯 Найдено {len(problem_stores_df)} магазинов с отклонением > {threshold}%")
-        fig = px.bar(problem_stores_df.head(20), x='магазин', y='Отклонение_%_шт_abs', title=f'ТОП-20 магазинов по абсолютному отклонению (> {threshold}%)', color='Отклонение_%_шт_abs', color_continuous_scale='Reds', labels={'магазин': 'Магазин', 'Отклонение_%_шт_abs': 'Абсолютное отклонение, %'})
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info(f"🎉 Отличная работа! Нет магазинов с отклонением больше {threshold}%")
-
-    st.markdown("---")
-    st.header("📈 Шаг 3.1: Анализ по сегментам")
-    selected_store_for_segment = st.selectbox("Выберите магазин для анализа по сегментам:", all_stores_list, key="segment_store_selector")
-
-    if selected_store_for_segment and 'Segment' in processed_df.columns:
-        full_segment_summary = processed_df.groupby(['магазин', 'Segment']).agg(
-            Plan_STUKI=('Plan_STUKI', 'sum'), Fact_STUKI=('Fact_STUKI', 'sum'),
-            Plan_GRN=('Plan_GRN', 'sum'), Fact_GRN=('Fact_GRN', 'sum')
-        ).reset_index()
+        # Форматирование таблицы
+        display_df = problem_stores_df.copy()
+        for col in ['Plan_STUKI', 'Fact_STUKI']:
+            display_df[col] = display_df[col].astype(int)
+        for col in ['Plan_GRN', 'Fact_GRN', 'Отклонение_грн']:
+            display_df[col] = display_df[col].round(2)
+        for col in ['Отклонение_%_шт', 'Отклонение_%_грн']:
+            display_df[col] = display_df[col].round(1)
         
-        segment_summary = full_segment_summary[full_segment_summary['магазин'] == selected_store_for_segment].copy()
+        st.dataframe(display_df, use_container_width=True)
+        
+        # Графики
+        st.subheader("Визуализация отклонений")
+        tab1, tab2 = st.tabs(["📊 По количеству", "💰 По деньгам"])
+        
+        with tab1:
+            fig_qty = px.bar(problem_stores_df.head(10), x='магазин', y='Отклонение_%_шт',
+                           title='ТОП-10 магазинов по отклонению в штуках (%)',
+                           color='Отклонение_%_шт', color_continuous_scale='RdYlBu_r')
+            fig_qty.update_xaxes(tickangle=45)
+            st.plotly_chart(fig_qty, use_container_width=True)
+        
+        with tab2:
+            fig_money = px.bar(problem_stores_df.head(10), x='магазин', y='Отклонение_%_грн',
+                             title='ТОП-10 магазинов по отклонению в деньгах (%)',
+                             color='Отклонение_%_грн', color_continuous_scale='RdYlBu_r')
+            fig_money.update_xaxes(tickangle=45)
+            st.plotly_chart(fig_money, use_container_width=True)
+    else:
+        st.info("Нет магазинов с отклонением больше заданного порога.")
 
-        if not segment_summary.empty:
-            segment_summary['Отклонение_шт'] = segment_summary['Fact_STUKI'] - segment_summary['Plan_STUKI']
-            segment_summary['Отклонение_грн'] = segment_summary['Fact_GRN'] - segment_summary['Plan_GRN']
-            segment_summary['Выполнение_плана_%'] = np.where(segment_summary['Plan_STUKI'] > 0, (segment_summary['Fact_STUKI'] / segment_summary['Plan_STUKI']) * 100, np.where(segment_summary['Fact_STUKI'] > 0, 999, 0))
-            
-            # --- ИСПРАВЛЕНИЕ ЗДЕСЬ ---
-            # Заменяем строгий формат integer ('d') на более гибкий float с 0 знаков после запятой ('f').
-            st.dataframe(segment_summary.drop(columns=['магазин']).style.format({
-                'Plan_STUKI': '{:,.0f}',
-                'Fact_STUKI': '{:,.0f}',
-                'Отклонение_шт': '{:+, .0f}',
-                'Plan_GRN': '{:,.0f}',
-                'Fact_GRN': '{:,.0f}',
-                'Отклонение_грн': '{:+, .0f}',
-                'Выполнение_плана_%': '{:.1f}%'
-            }), use_container_width=True)
-        else:
-            st.info(f"Для магазина «{selected_store_for_segment}» нет данных по сегментам.")
-    elif 'Segment' not in processed_df.columns:
-        st.warning("Колонка 'Segment' не найдена. Анализ по сегментам невозможен.")
-
+    # --- Детальный анализ ---
     st.sidebar.header("🔍 Детальный анализ")
-    problem_stores_list = sorted(problem_stores_df['магазин'].unique())
-    analysis_scope = st.sidebar.radio("Область анализа:", ('Только проблемные', 'Все магазины'), horizontal=True)
+    
+    all_stores_list = sorted(processed_df['магазин'].dropna().unique())
+    problem_stores_list = sorted(problem_stores_df['магазин'].unique()) if not problem_stores_df.empty else []
+    
+    analysis_scope = st.sidebar.radio("Область анализа:", ('Все магазины', 'Только проблемные'))
     stores_for_selection = problem_stores_list if analysis_scope == 'Только проблемные' and problem_stores_list else all_stores_list
-
-    if stores_for_selection:
-        selected_store = st.sidebar.selectbox("Выберите магазин:", options=stores_for_selection, key="detail_store_selector")
+    
+    if not stores_for_selection:
+        st.sidebar.warning("Нет магазинов для выбора по заданным критериям.")
+    else:
+        selected_store = st.sidebar.selectbox("Выберите магазин для детального анализа:", options=stores_for_selection)
+        
         if selected_store:
             st.markdown("---")
-            st.header(f"🏪 Шаг 4: Детальный анализ магазина «{selected_store}»")
-            
+            st.header(f"4. 🏪 Детальный анализ магазина: '{selected_store}'")
+
             store_df = processed_df[processed_df['магазин'] == selected_store].copy()
+
+            # Дополнительные фильтры
+            all_segments = sorted(store_df['Segment'].dropna().unique()) if 'Segment' in store_df.columns else []
+            all_brands = sorted(store_df['brend'].dropna().unique()) if 'brend' in store_df.columns else []
             
-            col1, col2 = st.columns(2)
-            all_segments = ['Все'] + sorted([s for s in store_df['Segment'].dropna().unique() if s]) if 'Segment' in store_df else ['Все']
-            all_brands = ['Все'] + sorted([b for b in store_df['brend'].dropna().unique() if b]) if 'brend' in store_df else ['Все']
-            selected_segment = col1.selectbox("Фильтр по сегменту:", all_segments)
-            selected_brand = col2.selectbox("Фильтр по бренду:", all_brands)
+            selected_segment = st.sidebar.selectbox("Выберите сегмент", options=['Все'] + all_segments)
+            selected_brand = st.sidebar.selectbox("Выберите бренд", options=['Все'] + all_brands)
             
+            # Применение фильтров
             filtered_df = store_df.copy()
-            if selected_segment != 'Все': filtered_df = filtered_df[filtered_df['Segment'] == selected_segment]
-            if selected_brand != 'Все': filtered_df = filtered_df[filtered_df['brend'] == selected_brand]
+            if selected_segment != 'Все':
+                filtered_df = filtered_df[filtered_df['Segment'] == selected_segment]
+            if selected_brand != 'Все':
+                filtered_df = filtered_df[filtered_df['brend'] == selected_brand]
 
-            metrics = calculate_advanced_metrics(filtered_df)
-            st.subheader("📈 Ключевые показатели")
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("План (шт.)", f"{int(metrics.get('total_plan_qty', 0)):,}")
-            m1.metric("Выполнение по шт. (%)", f"{metrics.get('qty_completion', 0):.1f}%", f"{metrics.get('qty_completion', 0) - 100:.1f}%")
-            m2.metric("Факт (шт.)", f"{int(metrics.get('total_fact_qty', 0)):,}", f"{int(metrics.get('qty_deviation', 0)):+,}")
-            m2.metric("Нет в наличии", f"{metrics.get('items_out_of_stock', 0):,}", delta_color="inverse")
-            m3.metric("План (грн)", f"{metrics.get('total_plan_money', 0):,.0f}")
-            m3.metric("Выполнение по грн (%)", f"{metrics.get('money_completion', 0):.1f}%", f"{metrics.get('money_completion', 0) - 100:.1f}%")
-            m4.metric("Факт (грн)", f"{metrics.get('total_fact_money', 0):,.0f}", f"{metrics.get('money_deviation', 0):+,.0f}")
-            m4.metric("Товаров в наличии", f"{metrics.get('items_with_stock', 0):,}", f"из {metrics.get('total_items', 0)}")
+            metrics = calculate_metrics(filtered_df)
 
-            if not filtered_df.empty:
-                st.subheader("📑 Детальная таблица по товарам (отсортирована по величине отклонения)")
-                display_cols = ['ART', 'Describe', 'Plan_STUKI', 'Fact_STUKI', 'Отклонение_шт', 'Отклонение_%_шт', 'Plan_GRN', 'Fact_GRN', 'Отклонение_грн']
+            # Отображение информации о фильтрах
+            filter_info = []
+            if selected_segment != 'Все': 
+                filter_info.append(f"Сегмент: **{selected_segment}**")
+            if selected_brand != 'Все': 
+                filter_info.append(f"Бренд: **{selected_brand}**")
+            
+            if filter_info:
+                st.info("🔍 Применены фильтры: " + ", ".join(filter_info))
+
+            # 1. Ключевые метрики
+            st.subheader("📊 Ключевые показатели")
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("План (шт.)", f"{int(metrics['total_plan_qty']):,}")
+            with col2:
+                st.metric("Факт (шт.)", f"{int(metrics['total_fact_qty']):,}", delta=f"{int(metrics['qty_deviation']):+,}")
+            with col3:
+                st.metric("План (грн.)", f"{metrics['total_plan_money']:,.0f}")
+            with col4:
+                st.metric("Факт (грн.)", f"{metrics['total_fact_money']:,.0f}", delta=f"{metrics['money_deviation']:+,.0f}")
+
+            # 2. Проценты выполнения
+            st.subheader("🎯 Выполнение плана")
+            col1, col2 = st.columns(2)
+            with col1:
+                completion_color = "normal" if 80 <= metrics['qty_completion'] <= 120 else "inverse"
+                st.metric("Выполнение по количеству", f"{metrics['qty_completion']:.1f}%",
+                         delta=f"{metrics['qty_completion'] - 100:.1f}%", delta_color=completion_color)
+            with col2:
+                completion_color = "normal" if 80 <= metrics['money_completion'] <= 120 else "inverse"
+                st.metric("Выполнение по стоимости", f"{metrics['money_completion']:.1f}%",
+                         delta=f"{metrics['money_completion'] - 100:.1f}%", delta_color=completion_color)
+
+            # 3. Структура сегментов
+            if len(all_segments) > 1 and 'Segment' in store_df.columns:
+                st.subheader("🥧 Структура сегментов")
+                segment_data = store_df.groupby('Segment').agg({'Plan_GRN': 'sum', 'Fact_GRN': 'sum'}).reset_index()
+                segment_data = segment_data[segment_data['Plan_GRN'] > 0]
                 
-                filtered_df['abs_deviation_qty'] = filtered_df['Отклонение_шт'].abs()
-                df_to_show = filtered_df.sort_values('abs_deviation_qty', ascending=False)
-                st.dataframe(df_to_show[[c for c in display_cols if c in df_to_show]], use_container_width=True, height=500)
-            else:
-                st.info("Нет данных для отображения по выбранным фильтрам.")
+                if not segment_data.empty:
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        fig_pie_plan = px.pie(segment_data, values='Plan_GRN', names='Segment',
+                                            title='План по сегментам (грн.)', hole=0.3)
+                        st.plotly_chart(fig_pie_plan, use_container_width=True)
+                    with col2:
+                        fig_pie_fact = px.pie(segment_data, values='Fact_GRN', names='Segment',
+                                            title='Факт по сегментам (грн.)', hole=0.3)
+                        st.plotly_chart(fig_pie_fact, use_container_width=True)
+
+            # 4. Спидометры
+            if selected_segment != 'Все':
+                st.subheader(f"⚡ Спидометры для сегмента: '{selected_segment}'")
+                col1, col2 = st.columns(2)
                 
-    st.markdown("---")
-    st.header("💾 Шаг 5: Скачать отчет")
-    excel_data = convert_df_to_excel(processed_df)
-    if excel_data:
-        st.download_button(label="📥 Скачать полный отчет в Excel", data=excel_data, file_name=f"plan_fact_analysis_{datetime.now().strftime('%Y-%m-%d')}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+                with col1:
+                    gauge_max_qty = max(metrics['total_plan_qty'], metrics['total_fact_qty']) * 1.2
+                    fig_gauge_qty = go.Figure(go.Indicator(
+                        mode="gauge+number+delta", value=metrics['total_fact_qty'],
+                        title={'text': "<b>Выполнение в штуках</b>"}, delta={'reference': metrics['total_plan_qty']},
+                        gauge={'axis': {'range': [0, gauge_max_qty]}, 'bar': {'color': "#1f77b4"},
+                               'steps': [{'range': [0, metrics['total_plan_qty'] * 0.8], 'color': "lightgray"},
+                                        {'range': [metrics['total_plan_qty'] * 0.8, metrics['total_plan_qty'] * 1.2], 'color': "gray"}],
+                               'threshold': {'line': {'color': "red", 'width': 4}, 'thickness': 0.75, 'value': metrics['total_plan_qty']}}
+                    ))
+                    st.plotly_chart(fig_gauge_qty, use_container_width=True)
+                
+                with col2:
+                    gauge_max_money = max(metrics['total_plan_money'], metrics['total_fact_money']) * 1.2
+                    fig_gauge_money = go.Figure(go.Indicator(
+                        mode="gauge+number+delta", value=metrics['total_fact_money'],
+                        title={'text': "<b>Выполнение в деньгах</b>"}, number={'suffix': " грн."},
+                        delta={'reference': metrics['total_plan_money']},
+                        gauge={'axis': {'range': [0, gauge_max_money]}, 'bar': {'color': "#1f77b4"},
+                               'steps': [{'range': [0, metrics['total_plan_money'] * 0.8], 'color': "lightgray"},
+                                        {'range': [metrics['total_plan_money'] * 0.8, metrics['total_plan_money'] * 1.2], 'color': "gray"}],
+                               'threshold': {'line': {'color': "red", 'width': 4}, 'thickness': 0.75, 'value': metrics['total_plan_money']}}
+                    ))
+                    st.plotly_chart(fig_gauge_money, use_container_width=True)
+
+            # 5. Анализ расхождений
+            st.subheader("⚠️ Анализ расхождений")
+            discrepancy_df = filtered_df[(filtered_df['Отклонение_шт'] != 0) | (filtered_df['Отклонение_грн'] != 0)].copy()
+            
+            if not discrepancy_df.empty:
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Позиций с расхождениями", len(discrepancy_df))
+                with col2:
+                    overstock = len(discrepancy_df[discrepancy_df['Отклонение_шт'] > 0])
+                    st.metric("Переостаток", overstock)
+                with col3:
+                    understock = len(discrepancy_df[discrepancy_df['Отклонение_шт'] < 0])
+                    st.metric("Недостаток", understock)
+                
+                # Настройки отображения таблицы
+                show_mode = st.radio("Показать:", ['Все расхождения', 'Только переостаток', 'Только недостаток'], horizontal=True)
+                
+                if show_mode == 'Только переостаток':
+                    table_df = discrepancy_df[discrepancy_df['Отклонение_шт'] > 0]
+                elif show_mode == 'Только недостаток':
+                    table_df = discrepancy_df[discrepancy_df['Отклонение_шт'] < 0]
+                else:
+                    table_df = discrepancy_df
+                
+                sort_column = st.selectbox("Сортировать по:", ['Отклонение_%_шт', 'Отклонение_%_грн', 'Отклонение_шт', 'Отклонение_грн'])
+                table_df = table_df.sort_values(by=sort_column, ascending=False, key=abs)
+                
+                # Отображение таблицы расхождений
+                display_columns = {'ART': 'Артикул', 'Describe': 'Описание', 'MOD': 'Модель', 'brend': 'Бренд',
+                                 'Segment': 'Сегмент', 'Price': 'Цена (грн.)', 'Plan_STUKI': 'План (шт.)',
+                                 'Fact_STUKI': 'Факт (шт.)', 'Отклонение_шт': 'Откл. (шт.)', 'Отклонение_%_шт': 'Откл. (%)',
+                                 'Plan_GRN': 'План (грн.)', 'Fact_GRN': 'Факт (грн.)', 'Отклонение_грн': 'Откл. (грн.)'}
+                
+                columns_to_show = [col for col in display_columns.keys() if col in table_df.columns]
+                display_df = table_df[columns_to_show].copy()
+                
+                # Форматирование числовых колонок
+                for col in ['Plan_STUKI', 'Fact_STUKI', 'Отклонение_шт']:
+                    if col in display_df.columns:
+                        display_df[col] = display_df[col].astype(int)
+                for col in ['Price', 'Plan_GRN', 'Fact_GRN', 'Отклонение_грн']:
+                    if col in display_df.columns:
+                        display_df[col] = display_df[col].round(2)
+                for col in ['Отклонение_%_шт', 'Отклонение_%_грн']:
+                    if col in display_df.columns:
+                        display_df[col] = display_df[col].round(1)
+                
+                st.dataframe(display_df.rename(columns=display_columns), use_container_width=True, height=400)
+                
+                # Экспорт
+                if st.button("📥 Экспорт таблицы расхождений в Excel"):
+                    output_df = display_df.rename(columns=display_columns)
+                    output_df.to_excel(f"расхождения_{selected_store}_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx", index=False)
+                    st.success("Файл экспортирован!")
